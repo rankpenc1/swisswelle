@@ -1,0 +1,8 @@
+streamlit
+google-generativeai
+beautifulsoup4
+Pillow
+requests
+fake-useragent
+cloudscraper
+woocommerce
