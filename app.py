@@ -1,16 +1,3 @@
-# @title ৩৮. সুইসওয়েলে V28 (এরর ফ্রি + সুপার ফাস্ট)
-import subprocess
-import sys
-import time # <--- FIXED: Added globally for Colab
-import os
-import re
-
-# 1. Install Libraries
-print("⚙️ সিস্টেম রেডি করা হচ্ছে... (একটু ধৈর্য ধরুন)")
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "google-generativeai", "streamlit", "beautifulsoup4", "Pillow", "requests", "fake-useragent", "cloudscraper", "woocommerce"])
-
-# 2. Write App File
-app_code = r'''
 import streamlit as st
 import cloudscraper
 from bs4 import BeautifulSoup
@@ -29,6 +16,7 @@ import requests
 from fake_useragent import UserAgent
 from woocommerce import API
 from requests.auth import HTTPBasicAuth
+from duckduckgo_search import DDGS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -87,6 +75,13 @@ def clean_url(url):
     if 'aliexpress' in url: url = re.sub(r'_\d+x\d+\.(jpg|png|webp).*', '.\g<1>', url)
     if 'shopify' in url or 'amazon' in url: return re.sub(r'_(small|thumb|medium|large|compact|\d+x\d+)', '', url).split('?')[0]
     return url
+
+def get_images_from_search(query):
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.images(query, max_results=10))
+            return [r['image'] for r in results]
+    except: return []
 
 def get_images(soup, url):
     candidates = set()
@@ -154,9 +149,6 @@ Output JSON: {{ "html_content": "...", "image_map": {{ "original_url": "german-k
 
 # --- UPLOAD FUNCTION ---
 def upload_image_to_wp(filepath, wp_url, user, app_pass, alt_text):
-    import requests
-    from requests.auth import HTTPBasicAuth
-    
     url = f"{wp_url}/wp-json/wp/v2/media"
     filename = os.path.basename(filepath)
     with open(filepath, 'rb') as img: media_data = img.read()
@@ -174,15 +166,12 @@ def upload_image_to_wp(filepath, wp_url, user, app_pass, alt_text):
     except: return None
 
 def publish_product(title, desc, img_ids, wp_url, ck, cs):
-    from woocommerce import API
     wcapi = API(url=wp_url, consumer_key=ck, consumer_secret=cs, version="wc/v3", timeout=30, verify_ssl=False)
     data = {"name": title, "description": desc, "status": "draft", "images": [{"id": i_id} for i_id in img_ids], "type": "simple", "regular_price": "0.00"}
     try: return wcapi.post("products", data)
     except: return None
 
 # --- UI ---
-st.title("🇩🇪 SwissWelle V28 (Final)")
-
 if not st.session_state.generated:
     st.session_state.p_name = st.text_input("Product Name", "SilberSchlinge")
     urls_input = st.text_area("Reference URLs", height=100)
@@ -206,6 +195,13 @@ if not st.session_state.generated:
                     s.write(f"✅ Scraped: {u}")
             
             unique_imgs = list(set(all_imgs))
+            
+            # Backup Search
+            if len(unique_imgs) < 2:
+                s.write("⚠️ Scraper blocked? Searching DuckDuckGo...")
+                backup_imgs = get_images_from_search(st.session_state.p_name + " product photography")
+                unique_imgs.extend(backup_imgs)
+            
             s.write(f"📸 Found {len(unique_imgs)} candidates...")
             
             res = ai_process(api_key, valid_model, st.session_state.p_name, full_text, unique_imgs)
@@ -278,30 +274,3 @@ else:
     with c2:
         st.subheader("2. Preview")
         components.html(f'<div style="background:white;padding:20px;color:black;">{st.session_state.html_content}</div>', height=800, scrolling=True)
-'''
-
-with open("app.py", "w", encoding='utf-8') as f:
-    f.write(code)
-
-# 3. Start Tunnel
-print("🚀 অ্যাপ চালু হচ্ছে...")
-subprocess.Popen(["streamlit", "run", "app.py", "--server.port=8501"])
-time.sleep(3)
-if not os.path.exists("cloudflared-linux-amd64"):
-    subprocess.call(["wget", "-q", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"])
-    subprocess.call(["chmod", "+x", "cloudflared-linux-amd64"])
-with open("tunnel.log", "w") as f:
-    subprocess.Popen(["./cloudflared-linux-amd64", "tunnel", "--url", "http://localhost:8501"], stdout=f, stderr=f)
-time.sleep(5)
-found = False
-for i in range(30):
-    try:
-        with open("tunnel.log", "r") as f:
-            match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', f.read())
-            if match:
-                print(f"\n👇 নিচের লিংকে ক্লিক করুন:\n👉  {match.group(0)}  👈\n")
-                found = True
-                break
-    except: pass
-    time.sleep(2)
-if not found: print("❌ লিংক পাওয়া যায়নি। দয়া করে আবার প্লে বাটন চাপুন।")
