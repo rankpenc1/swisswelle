@@ -20,7 +20,57 @@ from duckduckgo_search import DDGS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="SwissWelle V28", page_icon="🇨🇭", layout="wide")
+st.set_page_config(page_title="SwissWelle Manager", page_icon="🔒", layout="wide")
+
+# --- 1. SECURITY: LOGIN SYSTEM ---
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets["app_login_password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password.
+        st.text_input(
+            "Enter Admin Password", type="password", on_change=password_entered, key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password incorrect, show input + error.
+        st.text_input(
+            "Enter Admin Password", type="password", on_change=password_entered, key="password"
+        )
+        st.error("❌ Password incorrect")
+        return False
+    else:
+        # Password correct.
+        return True
+
+if not check_password():
+    st.stop()  # Stop execution if not logged in
+
+# =========================================================
+#  APP STARTS HERE (Only loads if password is correct)
+# =========================================================
+
+# --- 2. AUTO LOAD SECRETS ---
+def get_secret(key):
+    if key in st.secrets:
+        return st.secrets[key]
+    return ""
+
+# Initialize Variables with Secrets
+default_api_key = get_secret("gemini_api_key")
+default_wp_url = get_secret("wp_url")
+default_wc_ck = get_secret("wc_ck")
+default_wc_cs = get_secret("wc_cs")
+default_wp_user = get_secret("wp_user")
+default_wp_app_pass = get_secret("wp_app_pass")
 
 # Session State
 if 'generated' not in st.session_state: st.session_state.generated = False
@@ -30,10 +80,12 @@ if 'p_name' not in st.session_state: st.session_state.p_name = ""
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🇨🇭 SwissWelle V28")
+    st.title("🇨🇭 SwissWelle V30")
+    st.success("🔓 Logged in as Admin")
     
     with st.expander("1. AI Settings", expanded=True):
-        api_key = st.text_input("Gemini API Key", type="password")
+        api_key = st.text_input("Gemini API Key", value=default_api_key, type="password")
+        
         valid_model = None
         if api_key:
             try:
@@ -41,17 +93,17 @@ with st.sidebar:
                 models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'models/gemini-pro']
                 valid_model = next((m for p in preferred for m in models if p in m), models[0] if models else None)
-                if valid_model: st.success(f"✅ Brain: {valid_model.split('/')[-1]}")
+                if valid_model: st.caption(f"Brain: {valid_model.split('/')[-1]}")
             except: pass
 
     with st.expander("2. Website Connection", expanded=True):
-        wp_url = st.text_input("Website URL", value="https://swisswelle.ch")
-        wc_ck = st.text_input("Consumer Key (CK)", type="password")
-        wc_cs = st.text_input("Consumer Secret (CS)", type="password")
+        wp_url = st.text_input("Website URL", value=default_wp_url if default_wp_url else "https://swisswelle.ch")
+        wc_ck = st.text_input("Consumer Key (CK)", value=default_wc_ck, type="password")
+        wc_cs = st.text_input("Consumer Secret (CS)", value=default_wc_cs, type="password")
         
-        st.info("WP Admin (For Images):")
-        wp_user = st.text_input("Username")
-        wp_app_pass = st.text_input("App Password", type="password")
+        st.info("For Image Uploads:")
+        wp_user = st.text_input("Username", value=default_wp_user)
+        wp_app_pass = st.text_input("App Password", value=default_wp_app_pass, type="password")
         
         if st.button("🔌 Test Connection"):
             if not (wp_url and wc_ck and wc_cs):
