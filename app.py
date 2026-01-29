@@ -20,7 +20,7 @@ from duckduckgo_search import DDGS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="SwissWelle V31 (Boho+SEO)", page_icon="🌿", layout="wide")
+st.set_page_config(page_title="SwissWelle V32", page_icon="🌿", layout="wide")
 
 # --- 1. SECURITY & SECRETS ---
 def check_password():
@@ -60,8 +60,13 @@ if 'p_name' not in st.session_state: st.session_state.p_name = ""
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V31")
-    st.caption("Boho Edition + RankMath SEO")
+    st.title("🌿 SwissWelle V32")
+    st.caption("Scraper Fix + New Post Button")
+    
+    if st.button("🔄 Start New Post", type="secondary"):
+        for key in ['generated', 'html_content', 'image_map', 'p_name', 'selections', 'meta_desc']:
+            if key in st.session_state: del st.session_state[key]
+        st.rerun()
     
     with st.expander("AI Settings", expanded=True):
         api_key = st.text_input("Gemini API Key", value=default_api_key, type="password")
@@ -84,50 +89,66 @@ with st.sidebar:
 
 # --- LOGIC ---
 def clean_url(url):
-    url = re.sub(r'\?v=.*', '', url)
-    if 'aliexpress' in url: url = re.sub(r'_\d+x\d+\.(jpg|png|webp).*', '.\g<1>', url)
-    if 'shopify' in url or 'amazon' in url: return re.sub(r'_(small|thumb|medium|large|compact|\d+x\d+)', '', url).split('?')[0]
+    # Remove query params
+    url = url.split('?')[0]
+    # Fix AliExpress High Res
+    if 'alicdn' in url:
+        url = re.sub(r'_\d+x\d+\.(jpg|png|webp).*', '', url) # Remove size suffix
+        if not url.endswith(('.jpg', '.png', '.webp')): url += '.jpg'
+    # Fix Shopify/Amazon
+    if 'shopify' in url or 'amazon' in url: 
+        return re.sub(r'_(small|thumb|medium|large|compact|\d+x\d+)', '', url).split('?')[0]
     return url
 
 def get_images_from_search(query):
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=10))
+            results = list(ddgs.images(query, max_results=15))
             return [r['image'] for r in results]
     except: return []
 
 def scrape(url):
     try:
-        scraper = cloudscraper.create_scraper()
-        time.sleep(2)
-        r = scraper.get(url, timeout=20)
+        # Stronger Headers for AliExpress
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.google.com/"
+        }
+        
+        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+        time.sleep(random.uniform(2, 4))
+        r = scraper.get(url, headers=headers, timeout=25)
         soup = BeautifulSoup(r.content, 'html.parser')
         
-        # Get Images
+        # Enhanced Image Extraction
         candidates = set()
-        if 'aliexpress' in url:
-            ali_matches = re.findall(r'"(https://[^"]+?\.(?:jpg|jpeg|png|webp))"', soup.get_text())
-            for m in ali_matches: 
-                if 'ae01' in m or 'alicdn' in m: candidates.add(clean_url(m))
-        for s in soup.find_all('script'):
-            if s.string:
-                matches = re.findall(r'https?://[^\s"\'<>]+?\.(?:jpg|jpeg|png|webp)', s.string)
-                for m in matches: 
-                    if 'media-amazon' in m: m = re.sub(r'\._AC_.*_\.', '.', m)
-                    candidates.add(clean_url(m))
+        
+        # 1. Regex for ANY image link in the code (Best for AliExpress dynamic loads)
+        raw_html = str(soup)
+        regex_matches = re.findall(r'(https?://[^"\'\s<>]+?alicdn\.com[^"\'\s<>]+?\.(?:jpg|jpeg|png|webp))', raw_html)
+        for m in regex_matches: candidates.add(clean_url(m))
+        
+        # 2. Standard Tag Search
         for img in soup.find_all(['img', 'a']):
             for k, v in img.attrs.items():
                 if isinstance(v, str) and 'http' in v:
-                    if any(ext in v.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']): candidates.add(clean_url(v))
+                    if any(ext in v.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']): 
+                        if 'alicdn' in v or 'media-amazon' in v or 'shopify' in v:
+                            candidates.add(clean_url(v))
         
         final = []
         for c in candidates:
-            if any(x in c.lower() for x in ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank']): continue
+            # Filter junk icons
+            if any(x in c.lower() for x in ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey']): continue
             if c.startswith('http'): final.append(c)
             
         for s in soup(["script", "style", "nav", "footer"]): s.extract()
         return soup.get_text(separator=' ', strip=True)[:30000], list(set(final))
-    except: return "", []
+    except Exception as e: 
+        print(f"Scrape Error {url}: {e}")
+        return "", []
 
 def ai_process(key, model_name, p_name, text, imgs):
     genai.configure(api_key=key)
@@ -178,7 +199,6 @@ def upload_image_to_wp(filepath, wp_url, user, app_pass, alt_text):
 def publish_product(title, desc, featured_id, gallery_ids, meta_desc, wp_url, ck, cs):
     wcapi = API(url=wp_url, consumer_key=ck, consumer_secret=cs, version="wc/v3", timeout=30, verify_ssl=False)
     
-    # Construct Image Payload (Featured First)
     img_payload = [{"id": featured_id}] + [{"id": i} for i in gallery_ids if i != featured_id]
     
     data = {
@@ -199,7 +219,7 @@ def publish_product(title, desc, featured_id, gallery_ids, meta_desc, wp_url, ck
 # --- UI ---
 if not st.session_state.generated:
     st.session_state.p_name = st.text_input("Product Name", "SilberSchlinge")
-    urls_input = st.text_area("Reference URLs", height=100)
+    urls_input = st.text_area("Reference URLs (AliExpress/Amazon)", height=100)
     
     if st.button("🚀 Generate (Boho Style)", type="primary"):
         if not api_key: st.error("API Key Missing"); st.stop()
@@ -218,11 +238,14 @@ if not st.session_state.generated:
                     s.write(f"✅ Scraped: {u}")
             
             unique_imgs = list(set(all_imgs))
-            if len(unique_imgs) < 2:
-                s.write("⚠️ Searching backup images...")
-                unique_imgs.extend(get_images_from_search(st.session_state.p_name + " boho jewelry"))
             
-            s.write(f"📸 Analying {len(unique_imgs)} images...")
+            # IMPROVED BACKUP: Runs if fewer than 3 images found
+            if len(unique_imgs) < 3:
+                s.write("⚠️ Scraper limited? Searching Web for backup images...")
+                backup_imgs = get_images_from_search(st.session_state.p_name + " boho jewelry product")
+                unique_imgs.extend(backup_imgs)
+            
+            s.write(f"📸 Analyzing {len(unique_imgs)} images...")
             res = ai_process(api_key, valid_model, st.session_state.p_name, full_text, unique_imgs)
             
             if "error" in res: st.error(res['error'])
@@ -261,25 +284,22 @@ else:
         st.subheader("1. Select Images")
         image_files = list(st.session_state.image_map.keys())
         
-        # Selection State
         if 'selections' not in st.session_state:
             st.session_state.selections = {img: True for img in image_files}
             
-        # Grid Checkboxes
         cols = st.columns(3)
         for idx, img_path in enumerate(image_files):
             with cols[idx % 3]:
                 st.image(img_path, use_column_width=True)
                 st.session_state.selections[img_path] = st.checkbox(f"Keep", value=st.session_state.selections.get(img_path, True), key=f"chk_{idx}")
         
-        # Filter Selected
         final_selected = [img for img, sel in st.session_state.selections.items() if sel]
         
         st.markdown("---")
         st.subheader("2. Publish Options")
         
         # FEATURED IMAGE SELECTOR
-        featured_img = st.selectbox("Select Featured Image (Main):", final_selected)
+        featured_img = st.selectbox("Select Featured Image (Main):", final_selected) if final_selected else None
         
         # META DESC EDITOR
         meta_input = st.text_area("SEO Meta Description (RankMath):", value=st.session_state.meta_desc)
@@ -288,26 +308,28 @@ else:
             if not (wp_url and wc_ck and wc_cs): st.error("Check Website Connection!"); st.stop()
             
             with st.spinner("Publishing..."):
-                # 1. Upload Featured First
-                feat_alt = st.session_state.image_map.get(featured_img, st.session_state.p_name)
-                feat_id = upload_image_to_wp(featured_img, wp_url, wp_user, wp_app_pass, feat_alt)
+                # Upload Featured
+                feat_id = None
+                if featured_img:
+                    feat_alt = st.session_state.image_map.get(featured_img, st.session_state.p_name)
+                    feat_id = upload_image_to_wp(featured_img, wp_url, wp_user, wp_app_pass, feat_alt)
                 
-                # 2. Upload Others
+                # Upload Gallery
                 gallery_ids = []
                 progress = st.progress(0)
                 for i, p in enumerate(final_selected):
-                    if p != featured_img: # Skip if already uploaded as featured
+                    if p != featured_img:
                         alt = st.session_state.image_map.get(p, st.session_state.p_name)
                         pid = upload_image_to_wp(p, wp_url, wp_user, wp_app_pass, alt)
                         if pid: gallery_ids.append(pid)
                     progress.progress((i+1)/len(final_selected))
                 
-                # 3. Create Product
-                if feat_id:
+                # Create Product
+                if feat_id or gallery_ids:
                     res = publish_product(
                         st.session_state.p_name, 
                         st.session_state.html_content, 
-                        feat_id, 
+                        feat_id if feat_id else (gallery_ids[0] if gallery_ids else None), 
                         gallery_ids, 
                         meta_input, 
                         wp_url, wc_ck, wc_cs
@@ -317,16 +339,16 @@ else:
                         st.success("✅ Published Successfully!")
                         st.markdown(f"[👉 **Edit in WordPress**]({res.json().get('permalink')})")
                         st.balloons()
+                        if st.button("🔄 Start New Post (After Publish)"):
+                            for key in ['generated', 'html_content', 'image_map', 'p_name', 'selections', 'meta_desc']:
+                                if key in st.session_state: del st.session_state[key]
+                            st.rerun()
                     else: st.error(f"Failed: {res.text if res else 'Unknown'}")
-                else: st.error("Failed to upload featured image.")
+                else: st.error("No images uploaded.")
 
     with c2:
-        # TABS FOR PREVIEW
         tab1, tab2 = st.tabs(["👁️ Visual Preview", "📋 HTML Code"])
-        
         with tab1:
             components.html(f'<div style="background:white;padding:20px;color:black;font-family:sans-serif;">{st.session_state.html_content}</div>', height=800, scrolling=True)
-        
         with tab2:
             st.code(st.session_state.html_content, language='html')
-            st.info("Copy this code if you want to paste manually.")
