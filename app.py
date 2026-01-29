@@ -15,7 +15,7 @@ from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V38", page_icon="🛍️", layout="wide")
+st.set_page_config(page_title="SwissWelle V39", page_icon="🛍️", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -56,14 +56,13 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V38")
-    st.caption("Visual Preview Fix")
+    st.title("🌿 SwissWelle V39")
+    st.caption("Gallery Hunter + HTML View")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("Settings", expanded=True):
         api_key = st.text_input("Gemini API", value=default_api_key, type="password")
         
-        # AUTO MODEL DETECTOR
         valid_model = None
         if api_key:
             try:
@@ -80,7 +79,7 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- SMART SCRAPER ---
+# --- SMART SCRAPER (AliExpress Deep Scan) ---
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
@@ -94,7 +93,8 @@ def get_driver():
 def clean_url(url):
     url = url.split('?')[0]
     if 'alicdn' in url:
-        url = re.sub(r'_\d+x\d+\.(jpg|png|webp).*', '', url)
+        url = re.sub(r'_\d+x\d+\.(jpg|png|webp).*', '', url) # Remove size suffix
+        url = re.sub(r'_\.(jpg|png|webp)$', '', url) # Remove ending _.jpg
         if not url.endswith(('.jpg', '.png', '.webp')): url += '.jpg'
     if 'shopify' in url or 'amazon' in url: 
         return re.sub(r'_(small|thumb|medium|large|compact|\d+x\d+)', '', url).split('?')[0]
@@ -114,14 +114,27 @@ def scrape(url, product_name_fallback):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(2)
         
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
         candidates = set()
         
+        # 1. ALIEXPRESS JSON HUNTER (Finds hidden gallery images)
+        if 'aliexpress' in url:
+            try:
+                # Look for imagePathList in JSON data
+                json_matches = re.findall(r'"imagePathList":\s*\[(.*?)\]', page_source)
+                for match in json_matches:
+                    urls = re.findall(r'"(https?://[^"]+)"', match)
+                    for u in urls: candidates.add(clean_url(u))
+            except: pass
+
+        # 2. Check Blocked
         page_text = soup.get_text().lower()
-        if "captcha" in page_text or "login" in page_text or "verification" in page_text:
+        if "captcha" in page_text or "login" in page_text:
             st.toast("⚠️ Blocked. Switching to Web Search...", icon="🔄")
             return "", get_images_from_search(product_name_fallback + " boho jewelry")
 
+        # 3. Regular Regex Search
         matches = re.findall(r'(https?://[^"\'\s<>]+?alicdn\.com[^"\'\s<>]+?\.(?:jpg|jpeg|png|webp))', str(soup))
         for m in matches: candidates.add(clean_url(m))
         
@@ -132,7 +145,7 @@ def scrape(url, product_name_fallback):
                         candidates.add(clean_url(v))
         
         final = []
-        junk_words = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login']
+        junk_words = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login', 'search']
         for c in candidates:
             if any(x in c.lower() for x in junk_words): continue
             if c.startswith('http'): final.append(c)
@@ -204,23 +217,23 @@ if not st.session_state.generated:
     st.session_state.p_name = st.text_input("Product Name", "Boho Ring")
     urls_input = st.text_area("AliExpress/Amazon URLs", height=100)
     
-    if st.button("🚀 Generate (Auto-Fix Mode)", type="primary"):
+    if st.button("🚀 Generate (Deep Scan)", type="primary"):
         if not api_key: st.error("No API Key"); st.stop()
         if not valid_model: st.error("No valid AI model found!"); st.stop()
         
-        with st.status("Analyzing...", expanded=True) as s:
+        with st.status("Hunting Images...", expanded=True) as s:
             full_text = ""
             all_imgs = []
             urls = [u.strip() for u in urls_input.split('\n') if u.strip()]
             
             for u in urls:
-                s.write(f"🔍 Visiting: {u}")
+                s.write(f"🔍 Deep Scanning: {u}")
                 t, i = scrape(u, st.session_state.p_name)
                 full_text += t
                 all_imgs.extend(i)
             
             unique_imgs = list(set(all_imgs))
-            s.write(f"📸 Total valid images: {len(unique_imgs)}")
+            s.write(f"📸 Total images found: {len(unique_imgs)}")
             
             s.write(f"🧠 AI Writing Content...")
             res = ai_process(api_key, valid_model, st.session_state.p_name, full_text, unique_imgs)
@@ -276,17 +289,16 @@ else:
                 else: st.error(f"Failed: {res.text if res else 'Unknown'}")
 
     with c2:
-        st.subheader("Preview")
-        if st.session_state.html_content:
-            # FIXED: Added white background and black text styling for readability
-            components.html(
-                f"""
-                <div style="background-color: white; color: black; padding: 20px; border-radius: 10px; font-family: sans-serif;">
-                    {st.session_state.html_content}
-                </div>
-                """, 
-                height=800, 
-                scrolling=True
-            )
-        else:
-            st.warning("No content generated.")
+        # --- TAB VIEW RESTORED ---
+        tab1, tab2 = st.tabs(["👁️ Visual Preview", "📋 HTML Code"])
+        
+        with tab1:
+            if st.session_state.html_content:
+                components.html(
+                    f"""<div style="background-color: white; color: black; padding: 20px; font-family: sans-serif;">{st.session_state.html_content}</div>""", 
+                    height=800, scrolling=True
+                )
+            else: st.warning("No content.")
+            
+        with tab2:
+            st.text_area("Copy Code", value=st.session_state.html_content, height=800)
