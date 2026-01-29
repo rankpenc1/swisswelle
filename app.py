@@ -74,7 +74,7 @@ with st.sidebar:
             try:
                 genai.configure(api_key=api_key)
                 models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                # Priority list
+                # Priority list: Try newer models first, fall back to older ones
                 preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'models/gemini-1.0-pro', 'models/gemini-pro']
                 valid_model = next((m for p in preferred for m in models if p in m), models[0] if models else None)
                 if valid_model: st.success(f"✅ AI Ready: {valid_model.split('/')[-1]}")
