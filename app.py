@@ -1,34 +1,30 @@
 import streamlit as st
-import streamlit.components.v1 as components # Fix for Preview Error
+import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from PIL import Image
 from io import BytesIO
 import json
-import shutil
 import os
 import re
 import time 
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from fake_useragent import UserAgent
 from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V36", page_icon="🛍️", layout="wide")
+st.set_page_config(page_title="SwissWelle V37", page_icon="🛍️", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
     if "password_correct" not in st.session_state: st.session_state.password_correct = False
-    
     def password_entered():
         if st.session_state["password"] == st.secrets["app_login_password"]:
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else: st.session_state["password_correct"] = False
-
     if not st.session_state["password_correct"]:
         st.text_input("Enter Admin Password", type="password", on_change=password_entered, key="password")
         return False
@@ -46,7 +42,7 @@ default_wc_cs = get_secret("wc_cs")
 default_wp_user = get_secret("wp_user")
 default_wp_app_pass = get_secret("wp_app_pass")
 
-# Session Reset Logic
+# Session Reset
 def reset_app():
     for key in list(st.session_state.keys()):
         if key != 'password_correct': del st.session_state[key]
@@ -60,11 +56,9 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V36")
-    st.caption("Final Stable Version")
-    
-    if st.button("🔄 Start New Post", type="primary"):
-        reset_app()
+    st.title("🌿 SwissWelle V37")
+    st.caption("Smart Anti-Bot Fallback")
+    if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("Settings", expanded=True):
         api_key = st.text_input("Gemini API", value=default_api_key, type="password")
@@ -86,13 +80,16 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- SELENIUM SCRAPER ---
+# --- SMART SCRAPER ---
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # Stealth arguments
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=chrome_options)
 
 def clean_url(url):
@@ -105,22 +102,30 @@ def clean_url(url):
     return url
 
 def get_images_from_search(query):
+    """Fallback: Search DuckDuckGo for images if scraping fails"""
     try:
         with DDGS() as ddgs:
-            return [r['image'] for r in list(ddgs.images(query, max_results=10))]
+            return [r['image'] for r in list(ddgs.images(query, max_results=15))]
     except: return []
 
-def scrape(url):
+def scrape(url, product_name_fallback):
     try:
         driver = get_driver()
         driver.get(url)
         time.sleep(5) 
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(3)
+        time.sleep(2)
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         candidates = set()
         
+        # Check if blocked (Login page or Captcha)
+        page_text = soup.get_text().lower()
+        if "captcha" in page_text or "login" in page_text or "verification" in page_text:
+            st.toast("⚠️ AliExpress blocked direct access. Switching to Web Search...", icon="🔄")
+            return "", get_images_from_search(product_name_fallback + " boho jewelry")
+
+        # Extract Images
         matches = re.findall(r'(https?://[^"\'\s<>]+?alicdn\.com[^"\'\s<>]+?\.(?:jpg|jpeg|png|webp))', str(soup))
         for m in matches: candidates.add(clean_url(m))
         
@@ -131,21 +136,28 @@ def scrape(url):
                         candidates.add(clean_url(v))
         
         final = []
+        # FILTER JUNK IMAGES
+        junk_words = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login']
         for c in candidates:
-            if any(x in c.lower() for x in ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading']): continue
+            if any(x in c.lower() for x in junk_words): continue
             if c.startswith('http'): final.append(c)
+            
+        # If we only found junk or very few images, Trigger Fallback
+        if len(final) < 3:
+            st.toast("⚠️ Not enough images found. Searching Web...", icon="🌍")
+            web_imgs = get_images_from_search(product_name_fallback + " product")
+            final.extend(web_imgs)
             
         return soup.get_text(separator=' ', strip=True)[:30000], list(set(final))
     except Exception as e:
         print(f"Scrape Error: {e}")
-        return "", []
+        return "", get_images_from_search(product_name_fallback)
 
 def ai_process(key, model_name, p_name, text, imgs):
     try:
         genai.configure(api_key=key)
         model = genai.GenerativeModel(model_name)
         
-        # BROKEN DOWN PROMPT TO AVOID SYNTAX ERRORS
         instruction = """Role: Senior German Copywriter for 'swisswelle.ch'.
         Tone: Boho-Chic, Free-spirited, Artistic.
         TASKS:
@@ -171,13 +183,11 @@ def ai_process(key, model_name, p_name, text, imgs):
 # --- UPLOAD & PUBLISH ---
 def upload_image(url, wp_url, user, password, alt):
     try:
-        img_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).content
+        img_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10).content
         filename = f"{alt.replace(' ', '-').lower()}.webp"
-        
         api_url = f"{wp_url}/wp-json/wp/v2/media"
         headers = {'Content-Disposition': f'attachment; filename={filename}', 'Content-Type': 'image/webp'}
         r = requests.post(api_url, data=img_data, headers=headers, auth=HTTPBasicAuth(user, password))
-        
         if r.status_code == 201:
             pid = r.json()['id']
             requests.post(f"{api_url}/{pid}", json={"alt_text": alt, "title": alt}, auth=HTTPBasicAuth(user, password))
@@ -191,10 +201,7 @@ def publish(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
     data = {
         "name": title, "description": desc, "status": "draft", "images": images,
         "type": "simple", "regular_price": "0.00",
-        "meta_data": [
-            {"key": "rank_math_description", "value": meta},
-            {"key": "rank_math_focus_keyword", "value": title}
-        ]
+        "meta_data": [{"key": "rank_math_description", "value": meta}, {"key": "rank_math_focus_keyword", "value": title}]
     }
     return wcapi.post("products", data)
 
@@ -203,28 +210,25 @@ if not st.session_state.generated:
     st.session_state.p_name = st.text_input("Product Name", "Boho Ring")
     urls_input = st.text_area("AliExpress/Amazon URLs", height=100)
     
-    if st.button("🚀 Generate (Selenium + AI)", type="primary"):
+    if st.button("🚀 Generate (Auto-Fix Mode)", type="primary"):
         if not api_key: st.error("No API Key"); st.stop()
-        if not valid_model: st.error("No valid AI model found for this key!"); st.stop()
+        if not valid_model: st.error("No valid AI model found!"); st.stop()
         
-        with st.status("Running Selenium Browser...", expanded=True) as s:
+        with st.status("Analyzing...", expanded=True) as s:
             full_text = ""
             all_imgs = []
             urls = [u.strip() for u in urls_input.split('\n') if u.strip()]
             
             for u in urls:
-                t, i = scrape(u)
+                s.write(f"🔍 Visiting: {u}")
+                t, i = scrape(u, st.session_state.p_name)
                 full_text += t
                 all_imgs.extend(i)
-                s.write(f"✅ Scraped: {len(i)} images found")
             
             unique_imgs = list(set(all_imgs))
-            # Fallback search if Selenium fails
-            if len(unique_imgs) < 3:
-                s.write("⚠️ Low images? Searching web backup...")
-                unique_imgs.extend(get_images_from_search(st.session_state.p_name + " boho jewelry"))
+            s.write(f"📸 Total valid images: {len(unique_imgs)}")
             
-            s.write(f"🧠 AI Processing with {valid_model}...")
+            s.write(f"🧠 AI Writing Content...")
             res = ai_process(api_key, valid_model, st.session_state.p_name, full_text, unique_imgs)
             
             if "error" in res: st.error(res['error'])
@@ -274,12 +278,10 @@ else:
                 if res and res.status_code == 201:
                     st.success("✅ Done!")
                     st.markdown(f"[View Draft]({res.json().get('permalink')})")
-                    if st.button("🔄 Start New Post (Reset)"): reset_app()
+                    if st.button("🔄 Start New Post"): reset_app()
                 else: st.error(f"Failed: {res.text if res else 'Unknown'}")
 
     with c2:
         st.subheader("Preview")
         if st.session_state.html_content:
             components.html(st.session_state.html_content, height=600, scrolling=True)
-        else:
-            st.warning("No content generated.")
