@@ -15,7 +15,7 @@ from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V37", page_icon="🛍️", layout="wide")
+st.set_page_config(page_title="SwissWelle V38", page_icon="🛍️", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -56,8 +56,8 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V37")
-    st.caption("Smart Anti-Bot Fallback")
+    st.title("🌿 SwissWelle V38")
+    st.caption("Visual Preview Fix")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("Settings", expanded=True):
@@ -87,7 +87,6 @@ def get_driver():
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # Stealth arguments
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=chrome_options)
@@ -102,7 +101,6 @@ def clean_url(url):
     return url
 
 def get_images_from_search(query):
-    """Fallback: Search DuckDuckGo for images if scraping fails"""
     try:
         with DDGS() as ddgs:
             return [r['image'] for r in list(ddgs.images(query, max_results=15))]
@@ -119,13 +117,11 @@ def scrape(url, product_name_fallback):
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         candidates = set()
         
-        # Check if blocked (Login page or Captcha)
         page_text = soup.get_text().lower()
         if "captcha" in page_text or "login" in page_text or "verification" in page_text:
-            st.toast("⚠️ AliExpress blocked direct access. Switching to Web Search...", icon="🔄")
+            st.toast("⚠️ Blocked. Switching to Web Search...", icon="🔄")
             return "", get_images_from_search(product_name_fallback + " boho jewelry")
 
-        # Extract Images
         matches = re.findall(r'(https?://[^"\'\s<>]+?alicdn\.com[^"\'\s<>]+?\.(?:jpg|jpeg|png|webp))', str(soup))
         for m in matches: candidates.add(clean_url(m))
         
@@ -136,15 +132,13 @@ def scrape(url, product_name_fallback):
                         candidates.add(clean_url(v))
         
         final = []
-        # FILTER JUNK IMAGES
         junk_words = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login']
         for c in candidates:
             if any(x in c.lower() for x in junk_words): continue
             if c.startswith('http'): final.append(c)
             
-        # If we only found junk or very few images, Trigger Fallback
         if len(final) < 3:
-            st.toast("⚠️ Not enough images found. Searching Web...", icon="🌍")
+            st.toast("⚠️ Few images. Searching Web...", icon="🌍")
             web_imgs = get_images_from_search(product_name_fallback + " product")
             final.extend(web_imgs)
             
@@ -284,4 +278,15 @@ else:
     with c2:
         st.subheader("Preview")
         if st.session_state.html_content:
-            components.html(st.session_state.html_content, height=600, scrolling=True)
+            # FIXED: Added white background and black text styling for readability
+            components.html(
+                f"""
+                <div style="background-color: white; color: black; padding: 20px; border-radius: 10px; font-family: sans-serif;">
+                    {st.session_state.html_content}
+                </div>
+                """, 
+                height=800, 
+                scrolling=True
+            )
+        else:
+            st.warning("No content generated.")
