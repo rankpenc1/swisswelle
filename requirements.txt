@@ -4,7 +4,7 @@ beautifulsoup4
 Pillow
 requests
 fake-useragent
-cloudscraper
+selenium
+webdriver-manager
 woocommerce
 duckduckgo-search
-lxml
