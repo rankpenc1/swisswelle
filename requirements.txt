@@ -8,3 +8,5 @@ selenium
 webdriver-manager
 woocommerce
 duckduckgo-search
+groq
+openai
