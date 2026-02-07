@@ -2,6 +2,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import google.generativeai as genai
+from groq import Groq
+from openai import OpenAI
 from PIL import Image
 from io import BytesIO
 import json
@@ -15,7 +17,7 @@ from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V40", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="SwissWelle V41", page_icon="🧠", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -34,7 +36,11 @@ if not check_password(): st.stop()
 
 def get_secret(key): return st.secrets[key] if key in st.secrets else ""
 
-default_api_key = get_secret("gemini_api_key")
+# Init Secrets
+default_gemini_key = get_secret("gemini_api_key")
+default_deepseek_key = get_secret("deepseek_api_key")
+default_groq_key = get_secret("groq_api_key")
+
 default_wp_url = get_secret("wp_url")
 default_wc_ck = get_secret("wc_ck")
 default_wc_cs = get_secret("wc_cs")
@@ -53,22 +59,31 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🩺 SwissWelle V40")
-    st.caption("Diagnostic Mode (Error Fix)")
+    st.title("🌿 SwissWelle V41")
+    st.caption("Multi-Brain: Gemini | DeepSeek | Groq")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
-    with st.expander("Settings", expanded=True):
-        api_key = st.text_input("Gemini API", value=default_api_key, type="password")
-        valid_model = None
-        if api_key:
-            try:
-                genai.configure(api_key=api_key)
-                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'models/gemini-1.0-pro', 'models/gemini-pro']
-                valid_model = next((m for p in preferred for m in models if p in m), models[0] if models else None)
-                if valid_model: st.success(f"✅ AI Ready: {valid_model.split('/')[-1]}")
-            except: st.error("❌ Invalid API Key")
+    with st.expander("🧠 AI Brain Settings", expanded=True):
+        ai_provider = st.radio("Select AI Provider:", ["Gemini", "DeepSeek", "Groq"], index=0)
+        
+        api_key = ""
+        valid_model = ""
 
+        if ai_provider == "Gemini":
+            api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
+            if api_key: valid_model = "gemini-1.5-flash"
+            
+        elif ai_provider == "DeepSeek":
+            api_key = st.text_input("DeepSeek Key", value=default_deepseek_key, type="password")
+            if api_key: valid_model = "deepseek-chat"
+            st.caption("🚀 Best for logical writing")
+
+        elif ai_provider == "Groq":
+            api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
+            if api_key: valid_model = "llama3-70b-8192"
+            st.caption("⚡ Fastest speed")
+
+    with st.expander("Website Config", expanded=False):
         wp_url = st.text_input("WP URL", value=default_wp_url)
         wc_ck = st.text_input("CK", value=default_wc_ck, type="password")
         wc_cs = st.text_input("CS", value=default_wc_cs, type="password")
@@ -149,18 +164,48 @@ def scrape(url, product_name_fallback):
     except Exception as e:
         return "", get_images_from_search(product_name_fallback)
 
-def ai_process(key, model_name, p_name, text, imgs):
+# --- AI PROCESSING HUB ---
+def ai_process(provider, key, p_name, text, imgs):
+    
+    instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. TASKS: 1. Write HTML description (h2, h3, ul, p). 2. Write RankMath SEO Meta Description. 3. Select 15-20 BEST images. Rename with German keywords."""
+    data_context = f"Product: {p_name}\nImages found: {len(imgs)}\nList: {imgs[:400]}\nContext: {text[:50000]}"
+    output_format = """JSON OUTPUT: { "html_content": "...", "meta_description": "...", "image_map": { "original_url": "german-name" } }"""
+    final_prompt = f"{instruction}\n{data_context}\n{output_format}"
+
     try:
-        genai.configure(api_key=key)
-        model = genai.GenerativeModel(model_name)
-        instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. TASKS: 1. Write HTML description (h2, h3, ul, p). 2. Write RankMath SEO Meta Description. 3. Select 15-20 BEST images. Rename with German keywords."""
-        data_context = f"Product: {p_name}\nImages found: {len(imgs)}\nList: {imgs[:400]}\nContext: {text[:50000]}"
-        output_format = """JSON OUTPUT: { "html_content": "...", "meta_description": "...", "image_map": { "original_url": "german-name" } }"""
-        res = model.generate_content(f"{instruction}\n{data_context}\n{output_format}", generation_config={"response_mime_type": "application/json"})
-        return json.loads(res.text)
+        if provider == "Gemini":
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
+            return json.loads(res.text)
+
+        elif provider == "DeepSeek":
+            client = OpenAI(api_key=key, base_url="https://api.deepseek.com")
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
+                    {"role": "user", "content": final_prompt}
+                ],
+                response_format={ 'type': 'json_object' }
+            )
+            return json.loads(response.choices[0].message.content)
+
+        elif provider == "Groq":
+            client = Groq(api_key=key)
+            response = client.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
+                    {"role": "user", "content": final_prompt}
+                ],
+                response_format={ 'type': 'json_object' }
+            )
+            return json.loads(response.choices[0].message.content)
+
     except Exception as e: return {"error": str(e)}
 
-# --- DIAGNOSTIC UPLOAD & PUBLISH ---
+# --- UPLOAD & PUBLISH ---
 def upload_image(url, wp_url, user, password, alt):
     try:
         img_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).content
@@ -182,8 +227,6 @@ def upload_image(url, wp_url, user, password, alt):
 def publish(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
     try:
         wcapi = API(url=wp_url, consumer_key=ck, consumer_secret=cs, version="wc/v3", timeout=60, verify_ssl=False)
-        
-        # Filter valid IDs
         valid_gallery = [{"id": i} for i in gallery_ids if i is not None]
         images_payload = []
         if feat_id: images_payload.append({"id": feat_id})
@@ -203,24 +246,24 @@ if not st.session_state.generated:
     st.session_state.p_name = st.text_input("Product Name", "Boho Ring")
     urls_input = st.text_area("AliExpress/Amazon URLs", height=100)
     
-    if st.button("🚀 Generate (Deep Scan)", type="primary"):
+    if st.button("🚀 Generate Content", type="primary"):
         if not api_key: st.error("No API Key"); st.stop()
-        if not valid_model: st.error("No valid AI model found!"); st.stop()
         
-        with st.status("Hunting Images...", expanded=True) as s:
+        with st.status(f"Working with {ai_provider}...", expanded=True) as s:
             full_text = ""
             all_imgs = []
             urls = [u.strip() for u in urls_input.split('\n') if u.strip()]
             for u in urls:
-                s.write(f"🔍 Deep Scanning: {u}")
+                s.write(f"🔍 Scanning: {u}")
                 t, i = scrape(u, st.session_state.p_name)
                 full_text += t
                 all_imgs.extend(i)
             
             unique_imgs = list(set(all_imgs))
             s.write(f"📸 Total images found: {len(unique_imgs)}")
-            s.write(f"🧠 AI Writing Content...")
-            res = ai_process(api_key, valid_model, st.session_state.p_name, full_text, unique_imgs)
+            s.write(f"🧠 {ai_provider} is writing...")
+            
+            res = ai_process(ai_provider, api_key, st.session_state.p_name, full_text, unique_imgs)
             
             if "error" in res: st.error(res['error'])
             else:
@@ -250,14 +293,11 @@ else:
         if st.button("📤 Publish Draft"):
             with st.spinner("Processing..."):
                 error_log = []
-                
-                # Upload Featured
                 st.write("Uploading Featured Image...")
                 alt = st.session_state.image_map.get(feat_img, st.session_state.p_name)
                 feat_id, err = upload_image(feat_img, wp_url, wp_user, wp_app_pass, alt)
                 if err: error_log.append(f"Featured: {err}")
                 
-                # Upload Gallery
                 gallery_ids = []
                 bar = st.progress(0)
                 for i, u in enumerate(final_imgs):
@@ -269,23 +309,18 @@ else:
                     bar.progress((i+1)/len(final_imgs))
                 
                 if error_log:
-                    with st.expander("⚠️ Some images failed (Click to see)", expanded=False):
-                        st.write(error_log)
+                    with st.expander("⚠️ Some images failed", expanded=False): st.write(error_log)
                 
                 if feat_id:
                     res = publish(st.session_state.p_name, st.session_state.html_content, st.session_state.meta_desc, feat_id, gallery_ids, wp_url, wc_ck, wc_cs)
-                    
-                    if isinstance(res, str): # Connection Error
-                        st.error(res)
+                    if isinstance(res, str): st.error(res)
                     elif res.status_code == 201:
                         st.success("✅ Published Successfully!")
                         st.markdown(f"[👉 **Edit in WordPress**]({res.json().get('permalink')})")
                         st.balloons()
                         if st.button("🔄 Start New Post"): reset_app()
-                    else:
-                        st.error(f"Publish Failed (Code {res.status_code}): {res.text}")
-                else:
-                    st.error("❌ Cannot publish: Featured image failed to upload. Check App Password/Username.")
+                    else: st.error(f"Publish Failed: {res.text}")
+                else: st.error("❌ Featured image failed.")
 
     with c2:
         tab1, tab2 = st.tabs(["👁️ Visual Preview", "📋 HTML Code"])
