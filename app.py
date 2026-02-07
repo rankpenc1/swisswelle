@@ -17,7 +17,7 @@ from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V41", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="SwissWelle V43", page_icon="🧠", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -40,6 +40,7 @@ def get_secret(key): return st.secrets[key] if key in st.secrets else ""
 default_gemini_key = get_secret("gemini_api_key")
 default_deepseek_key = get_secret("deepseek_api_key")
 default_groq_key = get_secret("groq_api_key")
+default_openai_key = get_secret("openai_api_key")
 
 default_wp_url = get_secret("wp_url")
 default_wc_ck = get_secret("wc_ck")
@@ -59,29 +60,35 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V41")
-    st.caption("Multi-Brain: Gemini | DeepSeek | Groq")
+    st.title("🌿 SwissWelle V43")
+    st.caption("Powerhouse: OpenAI + Gemini + Groq")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
-        ai_provider = st.radio("Select AI Provider:", ["Gemini", "DeepSeek", "Groq"], index=0)
+        ai_provider = st.radio("Select AI Provider:", ["OpenAI", "Gemini", "Groq", "DeepSeek"], index=0)
         
         api_key = ""
         valid_model = ""
 
-        if ai_provider == "Gemini":
-            api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
-            if api_key: valid_model = "gemini-1.5-flash"
-            
-        elif ai_provider == "DeepSeek":
-            api_key = st.text_input("DeepSeek Key", value=default_deepseek_key, type="password")
-            if api_key: valid_model = "deepseek-chat"
-            st.caption("🚀 Best for logical writing")
+        if ai_provider == "OpenAI":
+            api_key = st.text_input("OpenAI Key", value=default_openai_key, type="password")
+            valid_model = "gpt-4o"
+            st.caption("Using: gpt-4o (Best Quality)")
 
+        elif ai_provider == "Gemini":
+            api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
+            valid_model = "gemini-2.0-flash-exp"
+            st.caption("Using: gemini-2.0-flash-exp (Free & Smart)")
+            
         elif ai_provider == "Groq":
             api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
-            if api_key: valid_model = "llama3-70b-8192"
-            st.caption("⚡ Fastest speed")
+            valid_model = "llama-3.3-70b-versatile"
+            st.caption("Using: llama-3.3-70b (Fastest)")
+
+        elif ai_provider == "DeepSeek":
+            api_key = st.text_input("DeepSeek Key", value=default_deepseek_key, type="password")
+            valid_model = "deepseek-chat"
+            st.warning("⚠️ Requires Balance")
 
     with st.expander("Website Config", expanded=False):
         wp_url = st.text_input("WP URL", value=default_wp_url)
@@ -173,16 +180,10 @@ def ai_process(provider, key, p_name, text, imgs):
     final_prompt = f"{instruction}\n{data_context}\n{output_format}"
 
     try:
-        if provider == "Gemini":
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
-            return json.loads(res.text)
-
-        elif provider == "DeepSeek":
-            client = OpenAI(api_key=key, base_url="https://api.deepseek.com")
+        if provider == "OpenAI":
+            client = OpenAI(api_key=key)
             response = client.chat.completions.create(
-                model="deepseek-chat",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
                     {"role": "user", "content": final_prompt}
@@ -191,14 +192,33 @@ def ai_process(provider, key, p_name, text, imgs):
             )
             return json.loads(response.choices[0].message.content)
 
+        elif provider == "Gemini":
+            genai.configure(api_key=key)
+            try:
+                model = genai.GenerativeModel("gemini-2.0-flash-exp")
+                res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
+            except:
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
+            return json.loads(res.text)
+
         elif provider == "Groq":
             client = Groq(api_key=key)
             response = client.chat.completions.create(
-                model="llama3-70b-8192",
+                model="llama-3.3-70b-versatile", 
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
                     {"role": "user", "content": final_prompt}
                 ],
+                response_format={ 'type': 'json_object' }
+            )
+            return json.loads(response.choices[0].message.content)
+            
+        elif provider == "DeepSeek":
+            client = OpenAI(api_key=key, base_url="https://api.deepseek.com")
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "system", "content": "Output JSON only."}, {"role": "user", "content": final_prompt}],
                 response_format={ 'type': 'json_object' }
             )
             return json.loads(response.choices[0].message.content)
@@ -261,7 +281,7 @@ if not st.session_state.generated:
             
             unique_imgs = list(set(all_imgs))
             s.write(f"📸 Total images found: {len(unique_imgs)}")
-            s.write(f"🧠 {ai_provider} is writing...")
+            s.write(f"🧠 {ai_provider} ({valid_model}) is writing...")
             
             res = ai_process(ai_provider, api_key, st.session_state.p_name, full_text, unique_imgs)
             
