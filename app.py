@@ -12,7 +12,7 @@ from selenium.webdriver.chrome.options import Options
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V56", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="SwissWelle V57", page_icon="🛡️", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -53,8 +53,8 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V56")
-    st.caption("Crash-Proof Debugger")
+    st.title("🌿 SwissWelle V57")
+    st.caption("WAF Firewall Bypass")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
@@ -66,7 +66,7 @@ with st.sidebar:
         if ai_provider == "AgentRouter":
             api_key = st.text_input("AgentRouter Token", value=default_agentrouter_key, type="password")
             valid_model = st.text_input("Model Name", value="deepseek-v3") 
-            st.caption("Direct HTTP Mode")
+            st.caption("Stealth Mode Active")
 
         elif ai_provider == "Gemini":
             api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
@@ -94,7 +94,8 @@ def get_images_from_search(query):
 
 def get_page_title(url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        # User-Agent Spoofing here too
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, 'html.parser')
@@ -107,7 +108,6 @@ def get_page_title(url):
     return None
 
 def scrape(url, current_p_name):
-    # Auto-detect Name
     detected_name = get_page_title(url)
     search_query = current_p_name
     
@@ -144,24 +144,26 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
     raw_response = ""
     try:
         if provider == "AgentRouter":
-            # --- CRASH PROOF REQUEST ---
             url = "https://agentrouter.org/v1/chat/completions"
+            
+            # --- FIREWALL BYPASS HEADER ---
+            # This is the magic line. It tells the firewall "I am a browser", not "I am python code".
             headers = {
                 "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
+            
             payload = {
                 "model": model_id,
                 "messages": [{"role": "user", "content": final_prompt}],
                 "response_format": { "type": "json_object" }
             }
             
-            # Debug Log
-            st.session_state.debug_log = f"Requesting: {url} | Model: {model_id}"
+            st.session_state.debug_log = f"Sending request to {url} with stealth headers..."
             
             r = requests.post(url, json=payload, headers=headers, timeout=120)
             
-            # CRITICAL CHECK: Did we get JSON?
             try:
                 response_json = r.json()
                 if 'choices' in response_json:
@@ -169,10 +171,10 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
                 elif 'error' in response_json:
                     return {"error": f"API Error: {response_json['error']}"}
                 else:
-                    return {"error": f"Unknown Response Structure: {r.text[:500]}"}
+                    return {"error": f"Unknown Response: {r.text[:500]}"}
             except json.JSONDecodeError:
-                # THIS IS THE FIX FOR "Expecting value..."
-                return {"error": f"Server returned NON-JSON (Likely HTML Error Page). Raw Output:\n{r.text[:1000]}"}
+                # If we still get HTML here, it means the firewall is VERY strict or the token is banned.
+                return {"error": f"🔥 WAF Blocked Request. Raw Output:\n{r.text[:500]}"}
 
         elif provider == "Gemini":
             genai.configure(api_key=key)
@@ -205,6 +207,7 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
 # --- UPLOAD & PUBLISH ---
 def upload_image(url, wp_url, user, password, alt):
     try:
+        # Adding user-agent to image download as well to prevent blocks
         img_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).content
         filename = f"{alt.replace(' ', '-').lower()}.webp"
         api_url = f"{wp_url}/wp-json/wp/v2/media"
@@ -264,8 +267,8 @@ if not st.session_state.generated:
             if "error" in res: 
                 st.error(res['error'])
                 if "AgentRouter" in ai_provider:
-                    st.info("💡 Tip: Check 'Raw AI Response' tab to see what the server actually sent.")
-                    st.session_state.raw_ai_response = res['error'] # Show error in debug tab
+                    st.info("Tip: Check 'Raw AI Response' tab. If you see HTML code, try changing the Model Name.")
+                    st.session_state.raw_ai_response = res['error']
             else:
                 st.session_state.html_content = res.get('html_content', 'No content')
                 st.session_state.meta_desc = res.get('meta_description', '')
