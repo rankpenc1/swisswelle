@@ -3,7 +3,6 @@ import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from groq import Groq
-from openai import OpenAI
 from PIL import Image
 from io import BytesIO
 import json
@@ -17,7 +16,7 @@ from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V49", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="SwissWelle V50", page_icon="🔥", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -59,8 +58,8 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V49")
-    st.caption("Grand Fix: Gallery + API")
+    st.title("🌿 SwissWelle V50")
+    st.caption("Brute Force Image + JSON Fix")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
@@ -71,13 +70,12 @@ with st.sidebar:
 
         if ai_provider == "AgentRouter":
             api_key = st.text_input("AgentRouter Token", value=default_agentrouter_key, type="password")
-            # Default to deepseek-v3
             valid_model = st.text_input("Model Name", value="deepseek-v3") 
             st.caption("Using AgentRouter Balance")
 
         elif ai_provider == "Gemini":
             api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
-            valid_model = "gemini-1.5-flash"
+            valid_model = "gemini-2.0-flash-exp"
             st.caption("Free Backup")
             
         elif ai_provider == "Groq":
@@ -92,35 +90,29 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- SMART SCRAPER (ULTIMATE GALLERY FIX) ---
+# --- BRUTE FORCE SCRAPER ---
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # Stealth mode to bypass bot detection
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=chrome_options)
 
 def clean_url(url):
-    url = url.split('?')[0] # Remove query params
+    # Step 1: Basic cleanup
+    url = url.split('?')[0]
     
-    # 1. Aggressive Cleaner for AliExpress
-    if 'alicdn' in url or 'aliexpress' in url:
-        # Remove weird extensions
-        url = url.replace('.jpg_.avif', '.jpg')
-        url = url.replace('_.avif', '')
-        
-        # Remove dimension suffixes (e.g. _960x960.jpg)
-        url = re.sub(r'_\d+x\d+.*$', '', url)
-        url = re.sub(r'_[Q|q]\d+.*$', '', url)
-        
-        # Ensure it ends with .jpg
-        if not url.endswith(('.jpg', '.png', '.webp')):
-            url += '.jpg'
-                
+    # Step 2: Handle AliExpress complex suffixes
+    if 'alicdn' in url:
+        # Find the first occurrence of .jpg or .png or .webp
+        match = re.search(r'(\.jpg|\.png|\.webp)', url, re.IGNORECASE)
+        if match:
+            # Cut off everything after the extension
+            url = url[:match.end()]
+            
     return url
 
 def get_images_from_search(query):
@@ -141,29 +133,20 @@ def scrape(url, product_name_fallback):
         soup = BeautifulSoup(page_source, 'html.parser')
         candidates = set()
         
-        # --- STRATEGY 1: JSON HUNT (The Real Gallery Fix) ---
-        # AliExpress stores gallery images in "imagePathList" inside scripts
-        if 'aliexpress' in url:
-            try:
-                json_matches = re.findall(r'imagePathList"?\s*[:=]\s*\[(.*?)\]', page_source)
-                for match in json_matches:
-                    urls = re.findall(r'"(https?://[^"]+)"', match)
-                    for u in urls: candidates.add(clean_url(u))
-            except: pass
-
-        # --- STRATEGY 2: MAGNIFIER CLASS (User Requested) ---
-        magnifier_imgs = soup.select('img[class*="magnifier"]')
-        for img in magnifier_imgs:
-            src = img.get('src')
-            if src: candidates.add(clean_url(src))
-
-        # --- STRATEGY 3: REGEX DEEP SCAN ---
-        # Find anything that looks like an image URL
-        raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp|avif))', page_source)
-        for m in raw_matches:
-            candidates.add(clean_url(m))
+        # --- BRUTE FORCE STRATEGY: REGEX EVERYTHING ---
+        # Look for ANY string that starts with http and ends with an image extension inside the raw code
+        # This catches images inside JSON, Script tags, Meta tags, everywhere.
         
-        # --- CLEANUP ---
+        # Pattern 1: Standard URLs
+        raw_matches = re.findall(r'(https?://[^"\s\'<>]+?\.alicdn\.com/[^"\s\'<>]+?\.(?:jpg|jpeg|png|webp))', page_source)
+        for m in raw_matches: candidates.add(clean_url(m))
+        
+        # Pattern 2: URLs hidden with size suffixes (like your example)
+        # matches things like: .../image.jpg_960x960.jpg_.avif
+        complex_matches = re.findall(r'(https?://[^"\s\'<>]+?\.alicdn\.com/[^"\s\'<>]+?\.(?:jpg|jpeg|png|webp)[^"\s\'<>]*)', page_source)
+        for m in complex_matches: candidates.add(clean_url(m))
+
+        # --- FILTERING ---
         final = []
         junk_words = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login', 'search', 'flag', '32x32', '50x50', '80x80']
         
@@ -171,10 +154,9 @@ def scrape(url, product_name_fallback):
             if any(x in c.lower() for x in junk_words): continue
             if c.startswith('http'): final.append(c)
             
-        # Fallback if blocked
-        page_text = soup.get_text().lower()
-        if len(final) < 3 or "captcha" in page_text:
-            st.toast("⚠️ Access Limited. Fetching Web Backups...", icon="🌍")
+        # Fallback
+        if len(final) < 3:
+            st.toast("⚠️ Images blocked. Fetching Web Backups...", icon="🌍")
             web_imgs = get_images_from_search(product_name_fallback + " boho product")
             final.extend(web_imgs)
             
@@ -183,7 +165,21 @@ def scrape(url, product_name_fallback):
         print(f"Scrape Error: {e}")
         return "", get_images_from_search(product_name_fallback)
 
-# --- AI PROCESSING HUB ---
+# --- AI PROCESSING HUB (JSON FIXER) ---
+def extract_json(text):
+    """Force extract JSON object from text containing markdown or other noise"""
+    try:
+        # First try direct parse
+        return json.loads(text)
+    except:
+        # Try finding the first { and last }
+        try:
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+        except: pass
+    return None
+
 def ai_process(provider, key, model_id, p_name, text, imgs):
     
     instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. TASKS: 1. Write HTML description (h2, h3, ul, p). 2. Write RankMath SEO Meta Description. 3. Select 15-20 BEST images. Rename with German keywords."""
@@ -192,55 +188,48 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
     final_prompt = f"{instruction}\n{data_context}\n{output_format}"
 
     try:
+        raw_response = ""
+        
         if provider == "AgentRouter":
-            # DIRECT REQUESTS CALL (Fixed URL for AgentRouter)
             url = "https://agentrouter.org/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"
-            }
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
             payload = {
                 "model": model_id,
-                "messages": [
-                    {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
-                    {"role": "user", "content": final_prompt}
-                ],
+                "messages": [{"role": "user", "content": final_prompt}],
                 "response_format": { "type": "json_object" }
             }
-            
             r = requests.post(url, json=payload, headers=headers, timeout=120)
-            
             if r.status_code == 200:
-                try:
-                    return json.loads(r.json()['choices'][0]['message']['content'])
-                except Exception as e:
-                    return {"error": f"JSON Parse Error: {str(e)}"}
+                raw_response = r.json()['choices'][0]['message']['content']
             else:
                 return {"error": f"AgentRouter Error ({r.status_code}): {r.text}"}
 
         elif provider == "Gemini":
             genai.configure(api_key=key)
             try:
-                # Try new model first
                 model = genai.GenerativeModel("gemini-2.0-flash-exp")
                 res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
+                raw_response = res.text
             except:
-                # Fallback to older model
                 try:
                     model = genai.GenerativeModel("gemini-1.5-flash")
                     res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
-                except:
-                    return {"error": "Gemini models failed. Check API Key."}
-            return json.loads(res.text)
+                    raw_response = res.text
+                except: return {"error": "Gemini Failed. API Key or Model issue."}
 
         elif provider == "Groq":
             client = Groq(api_key=key)
             response = client.chat.completions.create(
                 model=model_id, 
-                messages=[{"role": "system", "content": "Output JSON only."}, {"role": "user", "content": final_prompt}],
+                messages=[{"role": "user", "content": final_prompt}],
                 response_format={ 'type': 'json_object' }
             )
-            return json.loads(response.choices[0].message.content)
+            raw_response = response.choices[0].message.content
+
+        # --- SAFE PARSE ---
+        parsed = extract_json(raw_response)
+        if parsed: return parsed
+        else: return {"error": f"Failed to parse JSON. Raw output: {raw_response[:500]}..."}
 
     except Exception as e: return {"error": str(e)}
 
@@ -306,8 +295,6 @@ if not st.session_state.generated:
             
             if "error" in res: 
                 st.error(res['error'])
-                if "AgentRouter" in ai_provider:
-                    st.warning("👉 Check if your AgentRouter Token is correct and 'Quota' is set to Unlimited.")
             else:
                 st.session_state.html_content = res['html_content']
                 st.session_state.meta_desc = res.get('meta_description', '')
