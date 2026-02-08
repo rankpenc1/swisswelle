@@ -7,12 +7,10 @@ import json
 import re
 import time 
 import requests
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V57", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="SwissWelle V58", page_icon="💀", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -53,8 +51,8 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V57")
-    st.caption("WAF Firewall Bypass")
+    st.title("🌿 SwissWelle V58")
+    st.caption("Full Header Spoof + Gemini Fix")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
@@ -66,11 +64,11 @@ with st.sidebar:
         if ai_provider == "AgentRouter":
             api_key = st.text_input("AgentRouter Token", value=default_agentrouter_key, type="password")
             valid_model = st.text_input("Model Name", value="deepseek-v3") 
-            st.caption("Stealth Mode Active")
+            st.caption("Using Advanced Headers")
 
         elif ai_provider == "Gemini":
             api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
-            valid_model = "gemini-2.0-flash-exp"
+            valid_model = "gemini-1.5-flash"
             
         elif ai_provider == "Groq":
             api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
@@ -88,14 +86,14 @@ with st.sidebar:
 def get_images_from_search(query):
     try:
         with DDGS() as ddgs:
+            # Search specifically for the product on aliexpress
             results = list(ddgs.images(f"{query} aliexpress product", max_results=20))
             return [r['image'] for r in results]
     except: return []
 
 def get_page_title(url):
     try:
-        # User-Agent Spoofing here too
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, 'html.parser')
@@ -108,9 +106,11 @@ def get_page_title(url):
     return None
 
 def scrape(url, current_p_name):
+    # Auto-detect Name
     detected_name = get_page_title(url)
     search_query = current_p_name
     
+    # Use detected name if available and current name is empty/default
     if detected_name and (not current_p_name or len(current_p_name) < 3):
         search_query = detected_name
         st.session_state.p_name = detected_name
@@ -146,12 +146,21 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
         if provider == "AgentRouter":
             url = "https://agentrouter.org/v1/chat/completions"
             
-            # --- FIREWALL BYPASS HEADER ---
-            # This is the magic line. It tells the firewall "I am a browser", not "I am python code".
+            # --- ADVANCED WAF BYPASS HEADERS ---
             headers = {
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://agentrouter.org/",
+                "Origin": "https://agentrouter.org",
+                "Sec-Ch-Ua": '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"macOS"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin"
             }
             
             payload = {
@@ -160,8 +169,7 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
                 "response_format": { "type": "json_object" }
             }
             
-            st.session_state.debug_log = f"Sending request to {url} with stealth headers..."
-            
+            st.session_state.debug_log = f"Headers: {headers}\nURL: {url}"
             r = requests.post(url, json=payload, headers=headers, timeout=120)
             
             try:
@@ -171,21 +179,27 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
                 elif 'error' in response_json:
                     return {"error": f"API Error: {response_json['error']}"}
                 else:
-                    return {"error": f"Unknown Response: {r.text[:500]}"}
+                    # If JSON but unexpected structure
+                    return {"error": f"Unexpected JSON: {r.text[:500]}"}
             except json.JSONDecodeError:
-                # If we still get HTML here, it means the firewall is VERY strict or the token is banned.
-                return {"error": f"🔥 WAF Blocked Request. Raw Output:\n{r.text[:500]}"}
+                # Still getting HTML means Hard Block
+                return {"error": f"🔥 BLOCKED BY FIREWALL. AgentRouter does not allow Streamlit Cloud IP. Please use Gemini or Groq.\nRaw: {r.text[:200]}..."}
 
         elif provider == "Gemini":
             genai.configure(api_key=key)
             try:
-                model = genai.GenerativeModel("gemini-2.0-flash-exp")
-                res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
-                raw_response = res.text
-            except:
+                # Attempt 1: Standard Flash
                 model = genai.GenerativeModel("gemini-1.5-flash")
                 res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
                 raw_response = res.text
+            except Exception as e1:
+                try:
+                    # Attempt 2: Pro (older but reliable)
+                    model = genai.GenerativeModel("gemini-pro")
+                    res = model.generate_content(final_prompt)
+                    raw_response = res.text
+                except Exception as e2:
+                    return {"error": f"Gemini Error: {str(e1)} | {str(e2)}"}
 
         elif provider == "Groq":
             client = Groq(api_key=key)
@@ -207,7 +221,6 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
 # --- UPLOAD & PUBLISH ---
 def upload_image(url, wp_url, user, password, alt):
     try:
-        # Adding user-agent to image download as well to prevent blocks
         img_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).content
         filename = f"{alt.replace(' ', '-').lower()}.webp"
         api_url = f"{wp_url}/wp-json/wp/v2/media"
@@ -267,7 +280,7 @@ if not st.session_state.generated:
             if "error" in res: 
                 st.error(res['error'])
                 if "AgentRouter" in ai_provider:
-                    st.info("Tip: Check 'Raw AI Response' tab. If you see HTML code, try changing the Model Name.")
+                    st.warning("⚠️ If you see 'BLOCKED BY FIREWALL', it means AgentRouter is actively blocking Streamlit Cloud IPs. Please use Groq or Gemini instead.")
                     st.session_state.raw_ai_response = res['error']
             else:
                 st.session_state.html_content = res.get('html_content', 'No content')
@@ -305,7 +318,7 @@ else:
                         if pid: gallery_ids.append(pid)
                 
                 if feat_id:
-                    res = publish(st.session_state.p_name, st.session_state.html_content, st.session_state.html_content, feat_id, gallery_ids, wp_url, wc_ck, wc_cs)
+                    res = publish(st.session_state.p_name, st.session_state.html_content, st.session_state.meta_desc, feat_id, gallery_ids, wp_url, wc_ck, wc_cs)
                     if isinstance(res, str): st.error(res)
                     elif res.status_code == 201:
                         st.success("✅ Published!")
