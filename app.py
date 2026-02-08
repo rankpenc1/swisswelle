@@ -17,7 +17,7 @@ from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V47", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="SwissWelle V48", page_icon="🛠️", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -59,8 +59,8 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V47")
-    st.caption("AgentRouter Fix + Gallery Hunter")
+    st.title("🌿 SwissWelle V48")
+    st.caption("AVIF Fix + AgentRouter Debug")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
@@ -71,7 +71,6 @@ with st.sidebar:
 
         if ai_provider == "AgentRouter":
             api_key = st.text_input("AgentRouter Token", value=default_agentrouter_key, type="password")
-            # Using deepseek-v3 as default
             valid_model = st.text_input("Model Name", value="deepseek-v3") 
             st.caption("Balance-friendly")
 
@@ -92,7 +91,7 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- SMART SCRAPER (GALLERY FIX) ---
+# --- SMART SCRAPER (Ultimate AVIF Fix) ---
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
@@ -105,11 +104,21 @@ def get_driver():
 
 def clean_url(url):
     url = url.split('?')[0] # Remove query params
-    if 'alicdn' in url:
-        url = re.sub(r'_\d+x\d+.*$', '', url)
-        url = re.sub(r'_[Q|q]\d+.*$', '', url)
-        url = re.sub(r'\.jpg_.*$', '.jpg', url)
-        if not url.endswith(('.jpg', '.png', '.webp')): url += '.jpg'
+    
+    # 1. Handle .avif and AliExpress weirdness
+    if 'aliexpress' in url or 'alicdn' in url:
+        # Remove trailing _.avif
+        url = re.sub(r'_\.avif$', '', url)
+        # Remove size suffix like _960x960q75.jpg
+        url = re.sub(r'_\d+x\d+[a-zA-Z0-9]*\.jpg$', '.jpg', url)
+        # Remove other suffixes starting with _
+        url = re.sub(r'_.jpg$', '.jpg', url)
+        
+        # Ensure it ends with a valid extension
+        if not url.endswith(('.jpg', '.png', '.webp', '.jpeg')):
+            # Sometimes URL ends abruptly, force append jpg if it looks like an image ID
+            if '/kf/' in url: url += '.jpg'
+
     return url
 
 def get_images_from_search(query):
@@ -130,7 +139,16 @@ def scrape(url, product_name_fallback):
         soup = BeautifulSoup(page_source, 'html.parser')
         candidates = set()
         
-        # --- STRATEGY 1: JSON HUNT (Gallery Fix) ---
+        # --- STRATEGY 1: USER DEFINED CLASS (Magnifier) ---
+        # User reported: <img class="magnifier--image--..." src="...jpg_.avif">
+        for img in soup.find_all('img'):
+            src = img.get('src', '')
+            classes = img.get('class', [])
+            # Check if class contains 'magnifier' or src contains ali image pattern
+            if any('magnifier' in c for c in classes) or ('alicdn' in src):
+                if src: candidates.add(clean_url(src))
+
+        # --- STRATEGY 2: JSON HUNT (Hidden Gallery) ---
         if 'aliexpress' in url:
             try:
                 json_matches = re.findall(r'imagePathList"?\s*[:=]\s*\[(.*?)\]', page_source)
@@ -139,32 +157,27 @@ def scrape(url, product_name_fallback):
                     for u in urls: candidates.add(clean_url(u))
             except: pass
 
-        # --- STRATEGY 2: REGEX DEEP SCAN ---
-        raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp))', page_source)
+        # --- STRATEGY 3: REGEX DEEP SCAN (Any .avif or .jpg) ---
+        raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp|avif))', page_source)
         for m in raw_matches:
-            if '32x32' not in m and '50x50' not in m:
-                candidates.add(clean_url(m))
-        
-        # --- STRATEGY 3: STANDARD TAGS ---
-        for img in soup.find_all(['img', 'a']):
-            for k, v in img.attrs.items():
-                if isinstance(v, str) and 'http' in v:
-                    if any(ext in v.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']): 
-                        candidates.add(clean_url(v))
+            candidates.add(clean_url(m))
         
         final = []
-        junk_words = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login', 'search', 'flag']
+        junk_words = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login', 'search', 'flag', '32x32', '50x50']
+        
         for c in candidates:
             if any(x in c.lower() for x in junk_words): continue
             if c.startswith('http'): final.append(c)
             
+        # Fallback
         if len(final) < 3:
-            st.toast("⚠️ Attempting Backup Search...", icon="🌍")
+            st.toast("⚠️ Low image count. Searching Web...", icon="🌍")
             web_imgs = get_images_from_search(product_name_fallback + " product")
             final.extend(web_imgs)
             
         return soup.get_text(separator=' ', strip=True)[:30000], list(set(final))
     except Exception as e:
+        print(f"Error: {e}")
         return "", get_images_from_search(product_name_fallback)
 
 # --- AI PROCESSING HUB ---
@@ -177,8 +190,8 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
 
     try:
         if provider == "AgentRouter":
-            # DIRECT REQUESTS CALL (Fixed URL)
-            url = "https://agentrouter.org/v1/chat/completions" # Corrected Endpoint
+            # FIXED URL AND ERROR HANDLING
+            url = "https://agentrouter.org/v1/chat/completions" 
             headers = {
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json"
@@ -192,19 +205,19 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
                 "response_format": { "type": "json_object" }
             }
             
-            r = requests.post(url, json=payload, headers=headers, timeout=120) # Increased timeout
+            r = requests.post(url, json=payload, headers=headers, timeout=120)
             
             if r.status_code == 200:
-                try:
-                    return json.loads(r.json()['choices'][0]['message']['content'])
-                except:
-                    # Fallback if content isn't pure JSON
-                    raw = r.json()['choices'][0]['message']['content']
-                    clean_json = re.search(r'\{.*\}', raw, re.DOTALL)
-                    if clean_json: return json.loads(clean_json.group())
-                    else: return {"error": "AI returned invalid JSON"}
+                content = r.json()['choices'][0]['message']['content']
+                # Clean Markdown blocks if present (```json ... ```)
+                if "```" in content:
+                    content = re.search(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
+                    if content: content = content.group(1)
+                    else: content = r.json()['choices'][0]['message']['content'] # Fallback
+                return json.loads(content)
             else:
-                return {"error": f"AgentRouter Failed ({r.status_code}): {r.text}"}
+                # DEBUG INFO FOR USER
+                return {"error": f"AgentRouter Error {r.status_code}: {r.text}"}
 
         elif provider == "Gemini":
             genai.configure(api_key=key)
