@@ -305,7 +305,7 @@ else:
                         if pid: gallery_ids.append(pid)
                 
                 if feat_id:
-                    res = publish(st.session_state.p_name, st.session_state.html_content, st.session_state.meta_desc, feat_id, gallery_ids, wp_url, wc_ck, wc_cs)
+                    res = publish(st.session_state.p_name, st.session_state.html_content, st.session_state.html_content, feat_id, gallery_ids, wp_url, wc_ck, wc_cs)
                     if isinstance(res, str): st.error(res)
                     elif res.status_code == 201:
                         st.success("✅ Published!")
