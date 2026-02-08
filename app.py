@@ -17,7 +17,7 @@ from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V45", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="SwissWelle V47", page_icon="🚀", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -59,8 +59,8 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V45")
-    st.caption("Powered by AgentRouter ($225 Credit)")
+    st.title("🌿 SwissWelle V47")
+    st.caption("AgentRouter Fix + Gallery Hunter")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
@@ -71,9 +71,9 @@ with st.sidebar:
 
         if ai_provider == "AgentRouter":
             api_key = st.text_input("AgentRouter Token", value=default_agentrouter_key, type="password")
-            # Default model set to deepseek-v3 as it is cost-effective
+            # Using deepseek-v3 as default
             valid_model = st.text_input("Model Name", value="deepseek-v3") 
-            st.caption("Supports: deepseek-v3, gpt-4o, claude-3-5-sonnet etc.")
+            st.caption("Balance-friendly")
 
         elif ai_provider == "Gemini":
             api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
@@ -92,7 +92,7 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- SCRAPER ---
+# --- SMART SCRAPER (GALLERY FIX) ---
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
@@ -104,10 +104,11 @@ def get_driver():
     return webdriver.Chrome(options=chrome_options)
 
 def clean_url(url):
-    url = url.split('?')[0]
+    url = url.split('?')[0] # Remove query params
     if 'alicdn' in url:
-        url = re.sub(r'_\d+x\d+\.(jpg|png|webp).*', '', url)
-        url = re.sub(r'_\.(jpg|png|webp)$', '', url)
+        url = re.sub(r'_\d+x\d+.*$', '', url)
+        url = re.sub(r'_[Q|q]\d+.*$', '', url)
+        url = re.sub(r'\.jpg_.*$', '.jpg', url)
         if not url.endswith(('.jpg', '.png', '.webp')): url += '.jpg'
     return url
 
@@ -129,22 +130,22 @@ def scrape(url, product_name_fallback):
         soup = BeautifulSoup(page_source, 'html.parser')
         candidates = set()
         
+        # --- STRATEGY 1: JSON HUNT (Gallery Fix) ---
         if 'aliexpress' in url:
             try:
-                json_matches = re.findall(r'"imagePathList":\s*\[(.*?)\]', page_source)
+                json_matches = re.findall(r'imagePathList"?\s*[:=]\s*\[(.*?)\]', page_source)
                 for match in json_matches:
                     urls = re.findall(r'"(https?://[^"]+)"', match)
                     for u in urls: candidates.add(clean_url(u))
             except: pass
 
-        page_text = soup.get_text().lower()
-        if "captcha" in page_text or "login" in page_text:
-            st.toast("⚠️ Blocked. Switching to Web Search...", icon="🔄")
-            return "", get_images_from_search(product_name_fallback + " boho jewelry")
-
-        matches = re.findall(r'(https?://[^"\'\s<>]+?alicdn\.com[^"\'\s<>]+?\.(?:jpg|jpeg|png|webp))', str(soup))
-        for m in matches: candidates.add(clean_url(m))
+        # --- STRATEGY 2: REGEX DEEP SCAN ---
+        raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp))', page_source)
+        for m in raw_matches:
+            if '32x32' not in m and '50x50' not in m:
+                candidates.add(clean_url(m))
         
+        # --- STRATEGY 3: STANDARD TAGS ---
         for img in soup.find_all(['img', 'a']):
             for k, v in img.attrs.items():
                 if isinstance(v, str) and 'http' in v:
@@ -152,13 +153,13 @@ def scrape(url, product_name_fallback):
                         candidates.add(clean_url(v))
         
         final = []
-        junk = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login', 'search']
+        junk_words = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login', 'search', 'flag']
         for c in candidates:
-            if any(x in c.lower() for x in junk): continue
+            if any(x in c.lower() for x in junk_words): continue
             if c.startswith('http'): final.append(c)
             
         if len(final) < 3:
-            st.toast("⚠️ Few images. Searching Web...", icon="🌍")
+            st.toast("⚠️ Attempting Backup Search...", icon="🌍")
             web_imgs = get_images_from_search(product_name_fallback + " product")
             final.extend(web_imgs)
             
@@ -176,17 +177,34 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
 
     try:
         if provider == "AgentRouter":
-            # AgentRouter Base URL
-            client = OpenAI(api_key=key, base_url="https://api.agentrouter.org/v1")
-            response = client.chat.completions.create(
-                model=model_id, 
-                messages=[
+            # DIRECT REQUESTS CALL (Fixed URL)
+            url = "https://agentrouter.org/v1/chat/completions" # Corrected Endpoint
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": model_id,
+                "messages": [
                     {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
                     {"role": "user", "content": final_prompt}
                 ],
-                response_format={ 'type': 'json_object' }
-            )
-            return json.loads(response.choices[0].message.content)
+                "response_format": { "type": "json_object" }
+            }
+            
+            r = requests.post(url, json=payload, headers=headers, timeout=120) # Increased timeout
+            
+            if r.status_code == 200:
+                try:
+                    return json.loads(r.json()['choices'][0]['message']['content'])
+                except:
+                    # Fallback if content isn't pure JSON
+                    raw = r.json()['choices'][0]['message']['content']
+                    clean_json = re.search(r'\{.*\}', raw, re.DOTALL)
+                    if clean_json: return json.loads(clean_json.group())
+                    else: return {"error": "AI returned invalid JSON"}
+            else:
+                return {"error": f"AgentRouter Failed ({r.status_code}): {r.text}"}
 
         elif provider == "Gemini":
             genai.configure(api_key=key)
@@ -202,10 +220,7 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
             client = Groq(api_key=key)
             response = client.chat.completions.create(
                 model=model_id, 
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
-                    {"role": "user", "content": final_prompt}
-                ],
+                messages=[{"role": "system", "content": "Output JSON only."}, {"role": "user", "content": final_prompt}],
                 response_format={ 'type': 'json_object' }
             )
             return json.loads(response.choices[0].message.content)
