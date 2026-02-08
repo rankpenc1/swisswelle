@@ -3,22 +3,21 @@ import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from groq import Groq
-from io import BytesIO
-import json, os, re, time, requests
+import json, re, time, requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-# ===============================
-# BASIC CONFIG
-# ===============================
-st.set_page_config(page_title="SwissWelle V51", page_icon="🔥", layout="wide")
+# =========================================================
+# PAGE CONFIG
+# =========================================================
+st.set_page_config(page_title="SwissWelle V52", page_icon="🔥", layout="wide")
 
-# ===============================
+# =========================================================
 # SECURITY
-# ===============================
+# =========================================================
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
@@ -39,11 +38,12 @@ def check_password():
 if not check_password():
     st.stop()
 
-def secret(k): return st.secrets[k] if k in st.secrets else ""
+def secret(k): 
+    return st.secrets[k] if k in st.secrets else ""
 
-# ===============================
+# =========================================================
 # SECRETS
-# ===============================
+# =========================================================
 default_gemini_key = secret("gemini_api_key")
 default_agentrouter_key = secret("agentrouter_api_key")
 default_groq_key = secret("groq_api_key")
@@ -54,9 +54,9 @@ default_wc_cs = secret("wc_cs")
 default_wp_user = secret("wp_user")
 default_wp_app_pass = secret("wp_app_pass")
 
-# ===============================
-# SESSION RESET
-# ===============================
+# =========================================================
+# RESET
+# =========================================================
 def reset_app():
     for k in list(st.session_state.keys()):
         if k != "password_correct":
@@ -70,12 +70,12 @@ for k in ["generated", "html_content", "meta_desc", "image_map", "p_name"]:
 if "image_map" not in st.session_state:
     st.session_state.image_map = {}
 
-# ===============================
+# =========================================================
 # SIDEBAR
-# ===============================
+# =========================================================
 with st.sidebar:
-    st.title("🌿 SwissWelle V51")
-    st.caption("AliExpress + AgentRouter FIX")
+    st.title("🌿 SwissWelle V52")
+    st.caption("AgentRouter + AliExpress STABLE")
 
     if st.button("🔄 New Post"):
         reset_app()
@@ -103,14 +103,13 @@ with st.sidebar:
         wp_user = st.text_input("WP User", default_wp_user)
         wp_app_pass = st.text_input("WP App Pass", default_wp_app_pass, type="password")
 
-# ===============================
-# SELENIUM DRIVER
-# ===============================
+# =========================================================
+# SELENIUM
+# =========================================================
 @st.cache_resource
 def get_driver():
     opts = Options()
     opts.add_argument("--headless")
-    opts.add_argument("--disable-gpu")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument(
@@ -118,67 +117,14 @@ def get_driver():
     )
     return webdriver.Chrome(options=opts)
 
-# ===============================
-# URL CLEAN
-# ===============================
+# =========================================================
+# HELPERS
+# =========================================================
 def clean_url(u):
     u = u.split("?")[0]
     m = re.search(r"(\.jpg|\.jpeg|\.png|\.webp)", u, re.I)
     return u[:m.end()] if m else u
 
-# ===============================
-# ALIEXPRESS IMAGE EXTRACTION
-# ===============================
-def extract_aliexpress_images(html):
-    images = set()
-
-    # grab all JS JSON blocks
-    scripts = re.findall(r"{.*?}", html, re.DOTALL)
-
-    for block in scripts:
-        if "imagePathList" in block or "skuPropertyImagePath" in block:
-            try:
-                data = json.loads(block)
-            except:
-                continue
-
-            # gallery
-            img_module = data.get("imageModule", {})
-            for img in img_module.get("imagePathList", []):
-                images.add(clean_url("https:" + img if img.startswith("//") else img))
-
-            # variations
-            sku = data.get("skuModule", {})
-            for prop in sku.get("productSKUPropertyList", []):
-                for val in prop.get("propertyValueList", []):
-                    pimg = val.get("skuPropertyImagePath")
-                    if pimg:
-                        images.add(clean_url("https:" + pimg if pimg.startswith("//") else pimg))
-
-    return list(images)
-
-# ===============================
-# SCRAPER
-# ===============================
-def scrape(url, fallback):
-    driver = get_driver()
-    driver.get(url)
-    time.sleep(6)
-    html = driver.page_source
-    soup = BeautifulSoup(html, "html.parser")
-
-    imgs = extract_aliexpress_images(html)
-
-    if len(imgs) < 3:
-        with DDGS() as ddgs:
-            imgs += [r["image"] for r in ddgs.images(fallback, max_results=10)]
-
-    text = soup.get_text(" ", strip=True)[:30000]
-    return text, list(set(imgs))
-
-# ===============================
-# JSON FORCE PARSER
-# ===============================
 def force_json(txt):
     try:
         return json.loads(txt)
@@ -191,17 +137,65 @@ def force_json(txt):
                 pass
     return None
 
-# ===============================
-# AI PROCESSOR
-# ===============================
+# =========================================================
+# ALIEXPRESS IMAGE SCRAPER (GALLERY + VARIATIONS)
+# =========================================================
+def extract_aliexpress_images(html):
+    images = set()
+
+    blocks = re.findall(r"\{.*?\}", html, re.DOTALL)
+    for b in blocks:
+        if "imagePathList" in b or "skuPropertyImagePath" in b:
+            try:
+                data = json.loads(b)
+            except:
+                continue
+
+            img_mod = data.get("imageModule", {})
+            for img in img_mod.get("imagePathList", []):
+                images.add(clean_url("https:" + img if img.startswith("//") else img))
+
+            sku = data.get("skuModule", {})
+            for prop in sku.get("productSKUPropertyList", []):
+                for val in prop.get("propertyValueList", []):
+                    pimg = val.get("skuPropertyImagePath")
+                    if pimg:
+                        images.add(clean_url("https:" + pimg if pimg.startswith("//") else pimg))
+
+    return list(images)
+
+# =========================================================
+# SCRAPE
+# =========================================================
+def scrape(url, fallback):
+    driver = get_driver()
+    driver.get(url)
+    time.sleep(6)
+
+    html = driver.page_source
+    soup = BeautifulSoup(html, "html.parser")
+
+    images = extract_aliexpress_images(html)
+
+    if len(images) < 3:
+        with DDGS() as ddgs:
+            images += [r["image"] for r in ddgs.images(fallback, max_results=10)]
+
+    text = soup.get_text(" ", strip=True)[:30000]
+    return text, list(set(images))
+
+# =========================================================
+# AI PROCESS (FULLY SAFE)
+# =========================================================
 def ai_process(provider, key, model, name, text, images):
+
     prompt = f"""
 You are a senior German copywriter for swisswelle.ch.
 Tone: Boho Chic.
-Return ONLY valid JSON.
+
+Return ONLY valid JSON. No markdown. No explanation.
 
 Product: {name}
-Images: {images}
 
 TASK:
 1. Write HTML description (h2,h3,ul,p)
@@ -216,37 +210,62 @@ FORMAT:
 }}
 """
 
-    if provider == "AgentRouter":
-        r = requests.post(
-            "https://agentrouter.org/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"model": model, "messages": [{"role": "user", "content": prompt}]},
-            timeout=120,
-        )
-        raw = r.json()["choices"][0]["message"]["content"]
+    try:
+        # ---------------- AgentRouter ----------------
+        if provider == "AgentRouter":
+            r = requests.post(
+                "https://agentrouter.org/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.7,
+                },
+                timeout=120,
+            )
 
-    elif provider == "Gemini":
-        genai.configure(api_key=key)
-        model = genai.GenerativeModel(model)
-        raw = model.generate_content(prompt).text
+            if r.status_code != 200:
+                return {"error": f"AgentRouter HTTP {r.status_code}", "raw": r.text[:300]}
 
-    else:
-        client = Groq(api_key=key)
-        raw = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-        ).choices[0].message.content
+            if "application/json" not in r.headers.get("Content-Type", ""):
+                return {"error": "AgentRouter returned non-JSON", "raw": r.text[:300]}
 
-    parsed = force_json(raw)
-    if not parsed:
-        return {"error": "JSON parse failed"}
-    return parsed
+            try:
+                raw = r.json()["choices"][0]["message"]["content"]
+            except Exception:
+                return {"error": "AgentRouter JSON parse failed", "raw": r.text[:300]}
 
-# ===============================
-# UI – MAIN
-# ===============================
+        # ---------------- Gemini ----------------
+        elif provider == "Gemini":
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel(model)
+            raw = model.generate_content(prompt).text
+
+        # ---------------- Groq ----------------
+        else:
+            client = Groq(api_key=key)
+            raw = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+            ).choices[0].message.content
+
+        parsed = force_json(raw)
+        if not parsed:
+            return {"error": "AI returned invalid JSON", "raw": raw[:300]}
+
+        return parsed
+
+    except Exception as e:
+        return {"error": str(e)}
+
+# =========================================================
+# UI
+# =========================================================
 if not st.session_state.generated:
-    st.session_state.p_name = st.text_input("Product Name", "Boho Ring")
+    st.session_state.p_name = st.text_input("Product Name", "Welle Makramee Wandbehang")
     urls = st.text_area("AliExpress URLs (one per line)", height=120)
 
     if st.button("🚀 Generate"):
@@ -258,11 +277,19 @@ if not st.session_state.generated:
                     text += t
                     imgs += i
 
-            res = ai_process(ai_provider, api_key, model_id,
-                             st.session_state.p_name, text, list(set(imgs)))
+            res = ai_process(
+                ai_provider,
+                api_key,
+                model_id,
+                st.session_state.p_name,
+                text,
+                list(set(imgs)),
+            )
 
             if "error" in res:
                 st.error(res["error"])
+                if "raw" in res:
+                    st.code(res["raw"])
             else:
                 st.session_state.html_content = res["html_content"]
                 st.session_state.meta_desc = res["meta_description"]
@@ -275,10 +302,9 @@ else:
 
     with c1:
         st.subheader("Images")
-        selections = {}
         for i, (u, alt) in enumerate(st.session_state.image_map.items()):
             st.image(u)
-            selections[u] = st.checkbox("Use", True, key=f"img{i}")
+            st.checkbox("Use", True, key=f"img{i}")
 
     with c2:
         components.html(
