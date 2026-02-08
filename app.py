@@ -3,7 +3,6 @@ import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from groq import Groq
-from openai import OpenAI  # Standard library for AgentRouter (NewAPI)
 import json
 import re
 import time 
@@ -13,7 +12,7 @@ from selenium.webdriver.chrome.options import Options
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V54", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="SwissWelle V55", page_icon="🚀", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -54,8 +53,8 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V54")
-    st.caption("NewAPI Protocol + Auto-Title")
+    st.title("🌿 SwissWelle V55")
+    st.caption("Raw Requests (No Library Error)")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
@@ -66,9 +65,8 @@ with st.sidebar:
 
         if ai_provider == "AgentRouter":
             api_key = st.text_input("AgentRouter Token", value=default_agentrouter_key, type="password")
-            # NewAPI requires exact model mapping. deepseek-v3 is standard.
             valid_model = st.text_input("Model Name", value="deepseek-v3") 
-            st.caption("Protocol: OpenAI Compatible (NewAPI)")
+            st.caption("Using Manual HTTP Request")
 
         elif ai_provider == "Gemini":
             api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
@@ -88,59 +86,54 @@ with st.sidebar:
 # --- CORE FUNCTIONS ---
 
 def get_images_from_search(query):
-    """Fallback Image Search"""
+    """Reliable Image Search via DuckDuckGo"""
     try:
         with DDGS() as ddgs:
-            # Search specifically for the product
+            # We search specifically for the product name
             results = list(ddgs.images(f"{query} aliexpress product", max_results=20))
             return [r['image'] for r in results]
     except: return []
 
 def get_page_title(url):
-    """Lightweight scraper just to get the title for correct naming"""
+    """Attempt to get real product title to fix bad image search"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
             if soup.title:
-                title = soup.title.string
-                # Clean up AliExpress Title Junk
-                title = re.sub(r' - .*', '', title)
-                title = re.sub(r'\|.*', '', title)
-                return title.strip()
+                t = soup.title.string
+                t = re.sub(r' \| .*', '', t)
+                t = re.sub(r' - .*', '', t)
+                return t.strip()
     except: pass
     return None
 
 def scrape(url, current_p_name):
-    # 1. AUTO-DETECT NAME
-    # If the user hasn't typed a custom name (or it's empty), try to fetch it from the URL
+    # 1. Auto-Detect Name if possible
     detected_name = get_page_title(url)
     
-    final_name = current_p_name
-    if not final_name or final_name == "Boho Ring": # Overwrite default if still default
-        if detected_name:
-            final_name = detected_name
-            st.session_state.p_name = final_name # Update session state
-            st.toast(f"✅ Auto-detected Name: {final_name}")
+    # Use detected name if user field is empty or generic
+    search_query = current_p_name
+    if detected_name and (not current_p_name or len(current_p_name) < 3):
+        search_query = detected_name
+        st.session_state.p_name = detected_name
+        st.toast(f"✅ Title Detected: {detected_name}")
+
+    # 2. Search Images using the BEST available name
+    st.toast(f"🔍 Searching images for: {search_query}", icon="📸")
+    images = get_images_from_search(search_query)
     
-    # 2. SEARCH IMAGES based on the CORRECT name
-    st.toast(f"🔍 Searching images for: {final_name}", icon="📸")
-    images = get_images_from_search(final_name)
-    
-    return final_name, list(set(images))
+    return search_query, list(set(images))
 
 def extract_json_safely(text):
     if not text: return None
-    # Remove Markdown code blocks if AI adds them
+    # Strip Markdown
     text = re.sub(r'```json', '', text)
     text = re.sub(r'```', '', text)
     try:
         return json.loads(text)
     except:
-        # Fallback: regex search for JSON object
         try:
             match = re.search(r'\{.*\}', text, re.DOTALL)
             if match: return json.loads(match.group())
@@ -157,21 +150,27 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
     raw_response = ""
     try:
         if provider == "AgentRouter":
-            # CORRECT NEW-API IMPLEMENTATION
-            client = OpenAI(
-                api_key=key,
-                base_url="https://agentrouter.org/v1" # Standard NewAPI Endpoint
-            )
+            # --- MANUAL REQUESTS (The Fix) ---
+            # No 'openai' library wrapping. Just pure JSON.
+            url = "https://agentrouter.org/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": model_id,
+                "messages": [{"role": "user", "content": final_prompt}],
+                "response_format": { "type": "json_object" }
+            }
             
-            response = client.chat.completions.create(
-                model=model_id,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
-                    {"role": "user", "content": final_prompt}
-                ],
-                response_format={ "type": "json_object" } # Enforce JSON
-            )
-            raw_response = response.choices[0].message.content
+            r = requests.post(url, json=payload, headers=headers, timeout=120)
+            
+            if r.status_code == 200:
+                data = r.json() # Parse JSON response
+                # DIRECT DICTIONARY ACCESS - No .choices attribute
+                raw_response = data['choices'][0]['message']['content']
+            else:
+                return {"error": f"AgentRouter HTTP Error {r.status_code}: {r.text}"}
 
         elif provider == "Gemini":
             genai.configure(api_key=key)
@@ -193,14 +192,14 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
             )
             raw_response = response.choices[0].message.content
 
-        # Save for debugging
+        # Save & Parse
         st.session_state.raw_ai_response = raw_response
-        
         parsed = extract_json_safely(raw_response)
+        
         if parsed: return parsed
         else: return {"error": "JSON Parse Failed. See 'Raw AI Response' tab."}
 
-    except Exception as e: return {"error": str(e)}
+    except Exception as e: return {"error": f"Critical Error: {str(e)}"}
 
 # --- UPLOAD & PUBLISH ---
 def upload_image(url, wp_url, user, password, alt):
@@ -240,8 +239,7 @@ def publish(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
 
 # --- UI ---
 if not st.session_state.generated:
-    # REMOVED DEFAULT VALUE to prevent "Boho Ring" error
-    st.session_state.p_name = st.text_input("Product Name (Optional - Auto Detects from URL)", st.session_state.p_name if st.session_state.p_name else "")
+    st.session_state.p_name = st.text_input("Product Name (Leave empty to Auto-Detect)", st.session_state.p_name if st.session_state.p_name else "")
     urls_input = st.text_area("AliExpress/Amazon URLs", height=100)
     
     if st.button("🚀 Generate Content", type="primary"):
@@ -255,10 +253,8 @@ if not st.session_state.generated:
             
             for u in urls:
                 s.write(f"🔍 Analyzing URL...")
-                # Scrape now returns the DETECTED name too
                 detected_name, i = scrape(u, st.session_state.p_name)
                 
-                # Update UI with correct name
                 if detected_name:
                     st.session_state.p_name = detected_name
                 
@@ -335,10 +331,10 @@ else:
                         st.balloons()
                         if st.button("🔄 Start New Post"): reset_app()
                     else: st.error(f"Publish Failed: {res.text}")
-                else: st.error("❌ Featured image failed.")
+                else: st.error(f"❌ Featured image failed.")
 
     with c2:
-        tab1, tab2 = st.tabs(["👁️ Visual Preview", "📋 HTML Code", "🐛 Debug"])
+        tab1, tab2 = st.tabs(["👁️ Visual Preview", "📋 HTML Code", "🐛 Raw AI Response"])
         with tab1:
             if st.session_state.html_content:
                 components.html(f"""<div style="background-color: white; color: black; padding: 20px; font-family: sans-serif;">{st.session_state.html_content}</div>""", height=800, scrolling=True)
