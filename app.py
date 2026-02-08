@@ -17,7 +17,7 @@ from woocommerce import API
 from requests.auth import HTTPBasicAuth
 from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V43", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="SwissWelle V45", page_icon="🚀", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -38,9 +38,8 @@ def get_secret(key): return st.secrets[key] if key in st.secrets else ""
 
 # Init Secrets
 default_gemini_key = get_secret("gemini_api_key")
-default_deepseek_key = get_secret("deepseek_api_key")
+default_agentrouter_key = get_secret("agentrouter_api_key")
 default_groq_key = get_secret("groq_api_key")
-default_openai_key = get_secret("openai_api_key")
 
 default_wp_url = get_secret("wp_url")
 default_wc_ck = get_secret("wc_ck")
@@ -60,35 +59,31 @@ if 'image_map' not in st.session_state or not isinstance(st.session_state.image_
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V43")
-    st.caption("Powerhouse: OpenAI + Gemini + Groq")
+    st.title("🌿 SwissWelle V45")
+    st.caption("Powered by AgentRouter ($225 Credit)")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
-        ai_provider = st.radio("Select AI Provider:", ["OpenAI", "Gemini", "Groq", "DeepSeek"], index=0)
+        ai_provider = st.radio("Select AI Provider:", ["AgentRouter", "Gemini", "Groq"], index=0)
         
         api_key = ""
         valid_model = ""
 
-        if ai_provider == "OpenAI":
-            api_key = st.text_input("OpenAI Key", value=default_openai_key, type="password")
-            valid_model = "gpt-4o"
-            st.caption("Using: gpt-4o (Best Quality)")
+        if ai_provider == "AgentRouter":
+            api_key = st.text_input("AgentRouter Token", value=default_agentrouter_key, type="password")
+            # Default model set to deepseek-v3 as it is cost-effective
+            valid_model = st.text_input("Model Name", value="deepseek-v3") 
+            st.caption("Supports: deepseek-v3, gpt-4o, claude-3-5-sonnet etc.")
 
         elif ai_provider == "Gemini":
             api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
             valid_model = "gemini-2.0-flash-exp"
-            st.caption("Using: gemini-2.0-flash-exp (Free & Smart)")
+            st.caption("Free Backup")
             
         elif ai_provider == "Groq":
             api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
             valid_model = "llama-3.3-70b-versatile"
-            st.caption("Using: llama-3.3-70b (Fastest)")
-
-        elif ai_provider == "DeepSeek":
-            api_key = st.text_input("DeepSeek Key", value=default_deepseek_key, type="password")
-            valid_model = "deepseek-chat"
-            st.warning("⚠️ Requires Balance")
+            st.caption("Fast & Free")
 
     with st.expander("Website Config", expanded=False):
         wp_url = st.text_input("WP URL", value=default_wp_url)
@@ -172,7 +167,7 @@ def scrape(url, product_name_fallback):
         return "", get_images_from_search(product_name_fallback)
 
 # --- AI PROCESSING HUB ---
-def ai_process(provider, key, p_name, text, imgs):
+def ai_process(provider, key, model_id, p_name, text, imgs):
     
     instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. TASKS: 1. Write HTML description (h2, h3, ul, p). 2. Write RankMath SEO Meta Description. 3. Select 15-20 BEST images. Rename with German keywords."""
     data_context = f"Product: {p_name}\nImages found: {len(imgs)}\nList: {imgs[:400]}\nContext: {text[:50000]}"
@@ -180,10 +175,11 @@ def ai_process(provider, key, p_name, text, imgs):
     final_prompt = f"{instruction}\n{data_context}\n{output_format}"
 
     try:
-        if provider == "OpenAI":
-            client = OpenAI(api_key=key)
+        if provider == "AgentRouter":
+            # AgentRouter Base URL
+            client = OpenAI(api_key=key, base_url="https://api.agentrouter.org/v1")
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model=model_id, 
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
                     {"role": "user", "content": final_prompt}
@@ -205,20 +201,11 @@ def ai_process(provider, key, p_name, text, imgs):
         elif provider == "Groq":
             client = Groq(api_key=key)
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile", 
+                model=model_id, 
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that outputs JSON only."},
                     {"role": "user", "content": final_prompt}
                 ],
-                response_format={ 'type': 'json_object' }
-            )
-            return json.loads(response.choices[0].message.content)
-            
-        elif provider == "DeepSeek":
-            client = OpenAI(api_key=key, base_url="https://api.deepseek.com")
-            response = client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "system", "content": "Output JSON only."}, {"role": "user", "content": final_prompt}],
                 response_format={ 'type': 'json_object' }
             )
             return json.loads(response.choices[0].message.content)
@@ -283,7 +270,7 @@ if not st.session_state.generated:
             s.write(f"📸 Total images found: {len(unique_imgs)}")
             s.write(f"🧠 {ai_provider} ({valid_model}) is writing...")
             
-            res = ai_process(ai_provider, api_key, st.session_state.p_name, full_text, unique_imgs)
+            res = ai_process(ai_provider, api_key, valid_model, st.session_state.p_name, full_text, unique_imgs)
             
             if "error" in res: st.error(res['error'])
             else:
