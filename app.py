@@ -1,6 +1,5 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from bs4 import BeautifulSoup
 import google.generativeai as genai
 from groq import Groq
 import json
@@ -13,7 +12,7 @@ from selenium.webdriver.chrome.options import Options
 from PIL import Image
 import io
 
-st.set_page_config(page_title="SwissWelle V67", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="SwissWelle V68", page_icon="📦", layout="wide")
 
 # --- CONFIG ---
 def get_secret(key): return st.secrets.get(key, "")
@@ -30,7 +29,6 @@ def reset_app():
     st.session_state.clear()
     st.rerun()
 
-# State
 if 'generated' not in st.session_state: st.session_state.generated = False
 if 'html_content' not in st.session_state: st.session_state.html_content = ""
 if 'meta_desc' not in st.session_state: st.session_state.meta_desc = ""
@@ -39,11 +37,12 @@ if 'p_name' not in st.session_state: st.session_state.p_name = ""
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V67")
-    st.caption("Num Select + Selenium Scraper")
+    st.title("🌿 SwissWelle V68")
+    st.caption("Upload & Number Select")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Settings", expanded=True):
+        # GROQ DEFAULT (Since it works)
         ai_provider = st.radio("Provider:", ["Groq", "Gemini"], index=0)
         
         api_key = ""
@@ -55,7 +54,7 @@ with st.sidebar:
             
         elif ai_provider == "Gemini":
             api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
-            model_id = "gemini-pro"
+            model_id = "gemini-1.5-flash" # Requires updated library
 
     with st.expander("Website Config", expanded=False):
         wp_url = st.text_input("WP URL", value=default_wp_url)
@@ -64,7 +63,8 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- SCRAPER (SELENIUM) ---
+# --- FUNCTIONS ---
+
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
@@ -74,42 +74,26 @@ def get_driver():
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=chrome_options)
 
-def clean_url(url):
-    url = url.split('?')[0]
-    url = re.sub(r'_\.(webp|avif)$', '', url)
-    url = re.sub(r'\.jpg_.*$', '.jpg', url)
-    if not url.endswith(('.jpg', '.png', '.webp', '.jpeg')):
-        if 'alicdn' in url: url += '.jpg'
-    return url
-
 def scrape(url):
     driver = get_driver()
     candidates = set()
     title = ""
     try:
         driver.get(url)
-        time.sleep(3) # Wait for JS
-        
+        time.sleep(2)
         title = driver.title.split('|')[0].strip()
-        page_source = driver.page_source
+        # Filter bad titles
+        if "Captcha" in title or "Login" in title: title = ""
         
-        # 1. JSON Hunt
-        json_matches = re.findall(r'imagePathList"?\s*[:=]\s*\[(.*?)\]', page_source)
-        for match in json_matches:
-            urls = re.findall(r'"(https?://[^"]+)"', match)
-            for u in urls: candidates.add(clean_url(u))
-            
-        # 2. Regex Hunt
+        page_source = driver.page_source
         raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp))', page_source)
         for m in raw_matches:
-            if '32x32' not in m and '50x50' not in m: candidates.add(clean_url(m))
-            
-    except Exception as e:
-        print(f"Scrape Error: {e}")
-        
+            # Basic cleanup
+            m = m.split('?')[0]
+            if '32x32' not in m and '50x50' not in m and 'search' not in m:
+                candidates.add(m)
+    except: pass
     return title, list(candidates)
-
-# --- AI & UPLOAD ---
 
 def extract_json(text):
     if not text: return None
@@ -126,10 +110,10 @@ def ai_process(provider, key, model, p_name):
     instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. 
     TASKS: 
     1. Write an engaging HTML description (h2, h3, ul, p).
-    2. Write a RankMath SEO Meta Description (German).
+    2. Write a RankMath SEO Meta Description.
     Output JSON ONLY: { "html_content": "...", "meta_description": "..." }"""
     
-    prompt = f"Product Name: {p_name}\n\n{instruction}"
+    prompt = f"Product: {p_name}\n\n{instruction}"
 
     try:
         raw_response = ""
@@ -144,112 +128,122 @@ def ai_process(provider, key, model, p_name):
         elif provider == "Gemini":
             genai.configure(api_key=key)
             try:
+                mod = genai.GenerativeModel("gemini-1.5-flash")
+                res = mod.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                raw_response = res.text
+            except:
                 mod = genai.GenerativeModel("gemini-pro")
                 res = mod.generate_content(prompt)
                 raw_response = res.text
-            except Exception as e: return {"error": str(e)}
 
         return extract_json(raw_response)
     except Exception as e: return {"error": str(e)}
 
-def upload_to_wp(item, wp_url, user, password, p_name):
+def upload_wp(item, wp_url, user, password, p_name):
     try:
         api_url = f"{wp_url}/wp-json/wp/v2/media"
-        # CLEAN FILENAME (No Numbers)
-        safe_name = re.sub(r'[^a-zA-Z0-9]', '-', p_name[:20].lower())
+        safe_name = re.sub(r'[^a-zA-Z0-9]', '-', p_name[:15].lower())
         filename = f"{safe_name}-{int(time.time())}.jpg"
         
         if item['type'] == 'file':
             img_data = item['data'].getvalue()
+            filename = item['data'].name
         else:
             r = requests.get(item['data'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
-            if r.status_code != 200: return None, "DL Fail"
+            if r.status_code != 200: return None, "Download Fail"
             img_data = r.content
 
-        headers = {'Content-Disposition': f'attachment; filename={filename}','Content-Type': 'image/jpeg'}
+        headers = {'Content-Disposition': f'attachment; filename={filename}', 'Content-Type': 'image/jpeg'}
         r = requests.post(api_url, data=img_data, headers=headers, auth=HTTPBasicAuth(user, password), verify=False)
         
         if r.status_code == 201:
             pid = r.json()['id']
             requests.post(f"{api_url}/{pid}", json={"alt_text": p_name, "title": p_name}, auth=HTTPBasicAuth(user, password), verify=False)
             return pid, None
-        return None, r.text[:100]
+        return None, r.text[:50]
     except Exception as e: return None, str(e)
 
 def publish_product(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
     try:
-        # Construct Image List: Featured First, then Gallery
+        # Construct Image List: Featured First
         img_payload = [{"id": feat_id}] + [{"id": i} for i in gallery_ids if i != feat_id]
         
         data = {
-            "name": title, "description": desc, "status": "draft", "type": "simple", "regular_price": "0.00",
+            "name": title, "description": desc, "status": "draft", "type": "simple",
             "images": img_payload,
             "meta_data": [{"key": "rank_math_description", "value": meta}, {"key": "rank_math_focus_keyword", "value": title}]
         }
-        r = requests.post(f"{wp_url}/wp-json/wc/v3/products", auth=HTTPBasicAuth(ck, cs), json=data, verify=False)
-        return r
+        return requests.post(f"{wp_url}/wp-json/wc/v3/products", auth=HTTPBasicAuth(ck, cs), json=data, verify=False)
     except Exception as e: return str(e)
 
 # --- UI ---
+
 if not st.session_state.generated:
-    st.subheader("1. Product & Images")
+    st.subheader("1. Product Info")
     
-    col_input, col_load = st.columns([2, 1])
-    with col_input:
-        url_input = st.text_input("AliExpress URL (Scrape Images)")
+    col1, col2 = st.columns([3, 1])
+    with col1:
         p_name = st.text_input("Product Name", st.session_state.p_name)
+    with col2:
+        st.write("") # Spacer
+        
+    st.subheader("2. Images")
+    st.caption("Step 1: Try Scraping (Optional)")
+    url_input = st.text_input("AliExpress URL")
     
-    with col_load:
-        st.write("")
-        st.write("")
-        if st.button("🔍 Scrape URL", type="primary"):
-            if url_input:
-                with st.spinner("Scraping with Selenium..."):
-                    title, imgs = scrape(url_input)
-                    if title: st.session_state.p_name = title
-                    if imgs: 
-                        st.session_state.final_images = [{'type': 'url', 'data': u} for u in imgs]
-                        st.success(f"Found {len(imgs)} images!")
-                    else: st.error("No images found (Site might be blocked).")
-                st.rerun()
+    if st.button("🔍 Scrape Images", type="secondary"):
+        if url_input:
+            with st.spinner("Scraping..."):
+                t, imgs = scrape(url_input)
+                if t: st.session_state.p_name = t
+                if imgs:
+                    for u in imgs: st.session_state.final_images.append({'type': 'url', 'data': u})
+                    st.success(f"Found {len(imgs)} images")
+                    st.rerun()
+                else:
+                    st.error("No images found (Blocked). Please upload below.")
 
-    # Upload Tab
-    upl = st.file_uploader("Or Upload Manually", accept_multiple_files=True, type=['jpg','png','webp','jpeg'])
+    st.caption("Step 2: Upload Manually (Required if scraping fails)")
+    upl = st.file_uploader("Drop images here", accept_multiple_files=True, type=['jpg','png','webp','jpeg'])
     if upl:
-        # Add uploads to the list if not already there
-        current_files = [x['data'].name for x in st.session_state.final_images if x['type'] == 'file']
+        # Add only new files
+        existing_names = [x['data'].name for x in st.session_state.final_images if x['type'] == 'file']
+        count = 0
         for f in upl:
-            if f.name not in current_files:
+            if f.name not in existing_names:
                 st.session_state.final_images.append({'type': 'file', 'data': f})
+                count += 1
+        if count > 0: st.success(f"Added {count} uploaded images")
 
-    # IMAGE PREVIEW GRID (BEFORE GENERATION)
+    # PREVIEW BEFORE GEN
     if st.session_state.final_images:
         st.divider()
-        st.write(f"**Total Images: {len(st.session_state.final_images)}**")
+        st.write(f"**Total Selected: {len(st.session_state.final_images)}**")
+        
+        # Grid view
         cols = st.columns(6)
         for i, item in enumerate(st.session_state.final_images):
             with cols[i % 6]:
                 if item['type'] == 'file': st.image(item['data'], use_container_width=True)
                 else: st.image(item['data'], use_container_width=True)
-                # Remove Button
-                if st.button(f"❌ {i+1}", key=f"del_{i}"):
+                if st.button("❌", key=f"del_{i}"):
                     st.session_state.final_images.pop(i)
                     st.rerun()
 
     st.divider()
-    if st.button("📝 Generate Content", type="primary"):
-        if not api_key: st.error("API Key Missing"); st.stop()
-        if not st.session_state.p_name: st.error("Name Missing"); st.stop()
+    if st.button("🚀 Generate Content", type="primary"):
+        if not api_key or not p_name: st.error("Missing Data"); st.stop()
+        if not st.session_state.final_images: st.error("No Images!"); st.stop()
         
-        with st.status("Writing..."):
-            res = ai_process(ai_provider, api_key, model_id, st.session_state.p_name)
+        st.session_state.p_name = p_name
+        with st.status("Writing Content..."):
+            res = ai_process(ai_provider, api_key, model_id, p_name)
             if "error" in res: st.error(res['error'])
             else:
                 st.session_state.html_content = res.get('html_content', '')
                 st.session_state.meta_desc = res.get('meta_description', '')
-                if st.session_state.html_content:
-                    st.session_state.generated = True
-                    st.rerun()
+                st.session_state.generated = True
+                st.rerun()
 
 else:
     # --- PUBLISH SCREEN ---
@@ -257,71 +251,66 @@ else:
     
     with c1:
         st.subheader("🖼️ Select Featured Image")
+        img_list = st.session_state.final_images
         
-        img_count = len(st.session_state.final_images)
-        if img_count > 0:
-            # 1. IMAGE NUMBERING DISPLAY
-            cols = st.columns(4)
-            for i, item in enumerate(st.session_state.final_images):
-                with cols[i % 4]:
-                    if item['type'] == 'file': st.image(item['data'], use_container_width=True)
-                    else: st.image(item['data'], use_container_width=True)
-                    st.caption(f"Image {i+1}") # Number Display
+        # 1. Show Numbered Grid
+        cols = st.columns(4)
+        for i, item in enumerate(img_list):
+            with cols[i % 4]:
+                if item['type'] == 'file': st.image(item['data'], use_container_width=True)
+                else: st.image(item['data'], use_container_width=True)
+                st.markdown(f"<div style='text-align:center; font-weight:bold;'>Image {i+1}</div>", unsafe_allow_html=True)
+        
+        st.divider()
+        
+        # 2. Select Featured by Number
+        opts = list(range(1, len(img_list)+1))
+        feat_idx = st.selectbox("⭐ Choose Featured Image Number:", opts, index=0)
+        
+        if st.button("📤 Upload & Publish", type="primary"):
+            status = st.empty()
+            prog = st.progress(0)
             
-            st.divider()
+            # Logic: Featured is at feat_idx - 1
+            feat_img_obj = img_list[feat_idx - 1]
+            gallery_objs = [img for i, img in enumerate(img_list) if i != (feat_idx - 1)]
             
-            # 2. FEATURED IMAGE SELECTOR
-            # Allow user to choose number (1 to N)
-            options = list(range(1, img_count + 1))
-            feat_num = st.selectbox("⭐ Select Featured Image Number", options, index=0)
+            # Upload Featured
+            status.text("Uploading Featured Image...")
+            feat_id, err = upload_wp(feat_img_obj, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
             
-            # 3. GALLERY SELECTION
-            gallery_nums = st.multiselect("Select Gallery Images", options, default=options)
+            if not feat_id:
+                st.error(f"Featured Upload Failed: {err}")
+                st.stop()
+                
+            # Upload Gallery
+            gallery_ids = []
+            total = len(gallery_objs)
+            for idx, img in enumerate(gallery_objs):
+                status.text(f"Uploading Gallery {idx+1}/{total}...")
+                pid, err = upload_wp(img, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
+                if pid: gallery_ids.append(pid)
+                prog.progress((idx+1)/total)
             
-            if st.button("📤 Upload & Publish", type="primary"):
-                # Logic: Isolate Featured vs Gallery
-                feat_img = st.session_state.final_images[feat_num - 1]
-                gallery_imgs = [st.session_state.final_images[i-1] for i in gallery_nums if i != feat_num]
-                
-                status = st.empty()
-                progress = st.progress(0)
-                
-                # Upload Featured
-                status.text(f"Uploading Featured Image ({feat_num})...")
-                feat_id, err = upload_to_wp(feat_img, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
-                
-                if not feat_id:
-                    st.error(f"Featured Image Failed: {err}")
-                    st.stop()
-                
-                # Upload Gallery
-                gallery_ids = []
-                total = len(gallery_imgs)
-                for idx, img in enumerate(gallery_imgs):
-                    status.text(f"Uploading Gallery {idx+1}/{total}...")
-                    pid, err = upload_to_wp(img, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
-                    if pid: gallery_ids.append(pid)
-                    progress.progress((idx+1)/total)
-                
-                # Publish
-                status.text("Publishing to WordPress...")
-                res = publish_product(
-                    st.session_state.p_name,
-                    st.session_state.html_content,
-                    st.session_state.meta_desc,
-                    feat_id, gallery_ids, wp_url, wc_ck, wc_cs
-                )
-                
-                if isinstance(res, str): st.error(res)
-                elif res.status_code == 201:
-                    st.balloons()
-                    st.success("✅ Done!")
-                    st.markdown(f"[👉 Edit Post]({res.json().get('permalink')})")
-                    if st.button("New"): reset_app()
-                else: st.error(f"Error: {res.text}")
+            # Publish
+            status.text("Publishing...")
+            res = publish_product(
+                st.session_state.p_name,
+                st.session_state.html_content,
+                st.session_state.meta_desc,
+                feat_id, gallery_ids, wp_url, wc_ck, wc_cs
+            )
+            
+            if isinstance(res, str): st.error(res)
+            elif res.status_code == 201:
+                st.balloons()
+                st.success("✅ Published!")
+                st.markdown(f"[👉 **Click to Edit**]({res.json().get('permalink')})")
+                if st.button("New Post"): reset_app()
+            else: st.error(res.text)
 
     with c2:
         st.subheader("📝 Content")
-        # White Background Fix
-        html_view = f"""<div style="background:white;color:black;padding:20px;">{st.session_state.html_content}</div>"""
-        components.html(html_view, height=800, scrolling=True)
+        # Fixed White BG for readability
+        html_prev = f"""<div style="background:white; color:black; padding:20px; border-radius:8px;">{st.session_state.html_content}</div>"""
+        components.html(html_prev, height=800, scrolling=True)
