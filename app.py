@@ -7,10 +7,11 @@ import json
 import re
 import time 
 import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from requests.auth import HTTPBasicAuth
-from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="SwissWelle V58", page_icon="💀", layout="wide")
+st.set_page_config(page_title="SwissWelle V59", page_icon="✅", layout="wide")
 
 # --- 1. SECURITY ---
 def check_password():
@@ -29,9 +30,8 @@ if not check_password(): st.stop()
 
 def get_secret(key): return st.secrets[key] if key in st.secrets else ""
 
-# Init Secrets
+# Init Secrets (AgentRouter Removed)
 default_gemini_key = get_secret("gemini_api_key")
-default_agentrouter_key = get_secret("agentrouter_api_key")
 default_groq_key = get_secret("groq_api_key")
 default_wp_url = get_secret("wp_url")
 default_wc_ck = get_secret("wc_ck")
@@ -44,31 +44,26 @@ def reset_app():
         if key != 'password_correct': del st.session_state[key]
     st.rerun()
 
-for k in ['generated', 'html_content', 'meta_desc', 'image_map', 'p_name', 'raw_ai_response', 'debug_log']:
+for k in ['generated', 'html_content', 'meta_desc', 'image_map', 'p_name']:
     if k not in st.session_state: st.session_state[k] = None if k == 'p_name' else ""
 if 'image_map' not in st.session_state or not isinstance(st.session_state.image_map, dict):
     st.session_state.image_map = {}
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V58")
-    st.caption("Full Header Spoof + Gemini Fix")
+    st.title("🌿 SwissWelle V59")
+    st.caption("Stable: Groq + Gemini Pro")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
-        ai_provider = st.radio("Select AI Provider:", ["AgentRouter", "Gemini", "Groq"], index=0)
+        ai_provider = st.radio("Select AI Provider:", ["Groq", "Gemini"], index=0)
         
         api_key = ""
         valid_model = ""
 
-        if ai_provider == "AgentRouter":
-            api_key = st.text_input("AgentRouter Token", value=default_agentrouter_key, type="password")
-            valid_model = st.text_input("Model Name", value="deepseek-v3") 
-            st.caption("Using Advanced Headers")
-
-        elif ai_provider == "Gemini":
+        if ai_provider == "Gemini":
             api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
-            valid_model = "gemini-1.5-flash"
+            valid_model = "gemini-pro" # Changed to Pro for stability
             
         elif ai_provider == "Groq":
             api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
@@ -83,43 +78,72 @@ with st.sidebar:
 
 # --- CORE FUNCTIONS ---
 
-def get_images_from_search(query):
-    try:
-        with DDGS() as ddgs:
-            # Search specifically for the product on aliexpress
-            results = list(ddgs.images(f"{query} aliexpress product", max_results=20))
-            return [r['image'] for r in results]
-    except: return []
+def clean_url(url):
+    url = url.split('?')[0]
+    # Clean AliExpress formats
+    url = re.sub(r'_\.(webp|avif)$', '', url)
+    url = re.sub(r'\.jpg_.*$', '.jpg', url)
+    url = re.sub(r'\.png_.*$', '.png', url)
+    if not url.endswith(('.jpg', '.png', '.webp', '.jpeg')):
+        if 'alicdn' in url: url += '.jpg'
+    return url
 
 def get_page_title(url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, 'html.parser')
             if soup.title:
-                t = soup.title.string
-                t = re.sub(r' \| .*', '', t)
-                t = re.sub(r' - .*', '', t)
-                return t.strip()
+                return soup.title.string.split('|')[0].strip()
     except: pass
     return None
 
 def scrape(url, current_p_name):
-    # Auto-detect Name
+    # 1. Get Title
     detected_name = get_page_title(url)
-    search_query = current_p_name
-    
-    # Use detected name if available and current name is empty/default
-    if detected_name and (not current_p_name or len(current_p_name) < 3):
-        search_query = detected_name
-        st.session_state.p_name = detected_name
-        st.toast(f"✅ Title: {detected_name}")
+    if detected_name:
+        st.toast(f"✅ Product Found: {detected_name}")
+        if not current_p_name: st.session_state.p_name = detected_name
 
-    st.toast(f"🔍 Searching images for: {search_query}", icon="📸")
-    images = get_images_from_search(search_query)
-    
-    return search_query, list(set(images))
+    # 2. Try to Scrape (But don't use search fallback if it fails)
+    driver = None
+    candidates = set()
+    try:
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get(url)
+        time.sleep(3)
+        
+        page_source = driver.page_source
+        
+        # Check if blocked
+        if "login" in driver.title.lower() or "verify" in driver.title.lower():
+            st.error("⚠️ AliExpress has blocked the server IP. Auto-image fetch failed.")
+            return detected_name, [] # Return empty list, NO GARBAGE IMAGES
+
+        # Deep Regex for Gallery
+        json_matches = re.findall(r'imagePathList"?\s*[:=]\s*\[(.*?)\]', page_source)
+        for match in json_matches:
+            urls = re.findall(r'"(https?://[^"]+)"', match)
+            for u in urls: candidates.add(clean_url(u))
+            
+        # Regex for standard images
+        raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp))', page_source)
+        for m in raw_matches:
+            if '32x32' not in m and '50x50' not in m: candidates.add(clean_url(m))
+
+    except Exception as e:
+        print(e)
+    finally:
+        if driver: driver.quit()
+        
+    return detected_name, list(candidates)
 
 def extract_json_safely(text):
     if not text: return None
@@ -143,63 +167,18 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
 
     raw_response = ""
     try:
-        if provider == "AgentRouter":
-            url = "https://agentrouter.org/v1/chat/completions"
-            
-            # --- ADVANCED WAF BYPASS HEADERS ---
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://agentrouter.org/",
-                "Origin": "https://agentrouter.org",
-                "Sec-Ch-Ua": '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"macOS"',
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-origin"
-            }
-            
-            payload = {
-                "model": model_id,
-                "messages": [{"role": "user", "content": final_prompt}],
-                "response_format": { "type": "json_object" }
-            }
-            
-            st.session_state.debug_log = f"Headers: {headers}\nURL: {url}"
-            r = requests.post(url, json=payload, headers=headers, timeout=120)
-            
-            try:
-                response_json = r.json()
-                if 'choices' in response_json:
-                    raw_response = response_json['choices'][0]['message']['content']
-                elif 'error' in response_json:
-                    return {"error": f"API Error: {response_json['error']}"}
-                else:
-                    # If JSON but unexpected structure
-                    return {"error": f"Unexpected JSON: {r.text[:500]}"}
-            except json.JSONDecodeError:
-                # Still getting HTML means Hard Block
-                return {"error": f"🔥 BLOCKED BY FIREWALL. AgentRouter does not allow Streamlit Cloud IP. Please use Gemini or Groq.\nRaw: {r.text[:200]}..."}
-
-        elif provider == "Gemini":
+        if provider == "Gemini":
             genai.configure(api_key=key)
             try:
-                # Attempt 1: Standard Flash
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                # Using 'gemini-pro' as fallback if flash fails
+                model = genai.GenerativeModel("gemini-pro")
                 res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
                 raw_response = res.text
-            except Exception as e1:
-                try:
-                    # Attempt 2: Pro (older but reliable)
-                    model = genai.GenerativeModel("gemini-pro")
-                    res = model.generate_content(final_prompt)
-                    raw_response = res.text
-                except Exception as e2:
-                    return {"error": f"Gemini Error: {str(e1)} | {str(e2)}"}
+            except:
+                # Absolute fallback
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                res = model.generate_content(final_prompt)
+                raw_response = res.text
 
         elif provider == "Groq":
             client = Groq(api_key=key)
@@ -210,13 +189,11 @@ def ai_process(provider, key, model_id, p_name, text, imgs):
             )
             raw_response = response.choices[0].message.content
 
-        st.session_state.raw_ai_response = raw_response
         parsed = extract_json_safely(raw_response)
-        
         if parsed: return parsed
-        else: return {"error": "JSON Parse Failed. See 'Raw AI Response' tab."}
+        else: return {"error": f"JSON Parse Failed. Raw: {raw_response[:500]}"}
 
-    except Exception as e: return {"error": f"Critical Exception: {str(e)}"}
+    except Exception as e: return {"error": f"AI Error: {str(e)}"}
 
 # --- UPLOAD & PUBLISH ---
 def upload_image(url, wp_url, user, password, alt):
@@ -247,8 +224,11 @@ def publish(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
 
 # --- UI ---
 if not st.session_state.generated:
-    st.session_state.p_name = st.text_input("Product Name (Leave empty for Auto)", st.session_state.p_name if st.session_state.p_name else "")
+    st.session_state.p_name = st.text_input("Product Name", st.session_state.p_name if st.session_state.p_name else "")
     urls_input = st.text_area("AliExpress/Amazon URLs", height=100)
+    
+    # MANUAL IMAGE INPUT (Safety Net)
+    manual_imgs = st.text_area("Paste Direct Image URLs here if scraper fails (Optional)", height=100, placeholder="https://example.com/image1.jpg\nhttps://example.com/image2.jpg")
     
     if st.button("🚀 Generate Content", type="primary"):
         if not api_key: st.error("No API Key"); st.stop()
@@ -259,6 +239,7 @@ if not st.session_state.generated:
             full_text = ""
             all_imgs = []
             
+            # 1. Try Scraping
             for u in urls:
                 s.write(f"🔍 Analyzing URL...")
                 detected_name, i = scrape(u, st.session_state.p_name)
@@ -266,11 +247,17 @@ if not st.session_state.generated:
                 full_text += f"Product: {st.session_state.p_name}. URL: {u}\n"
                 all_imgs.extend(i)
             
+            # 2. Add Manual Images
+            m_imgs = [m.strip() for m in manual_imgs.split('\n') if m.strip()]
+            if m_imgs:
+                s.write(f"📥 Added {len(m_imgs)} manual images")
+                all_imgs.extend(m_imgs)
+                
             unique_imgs = list(set(all_imgs))
             s.write(f"📸 Total images found: {len(unique_imgs)}")
             
             if len(unique_imgs) == 0:
-                st.error("❌ No images found. URL blocked or Name detection failed.")
+                st.error("❌ No images found. AliExpress blocked the server IP. Please Paste Image URLs manually in the box above.")
                 st.stop()
                 
             s.write(f"🧠 {ai_provider} ({valid_model}) is writing...")
@@ -279,9 +266,6 @@ if not st.session_state.generated:
             
             if "error" in res: 
                 st.error(res['error'])
-                if "AgentRouter" in ai_provider:
-                    st.warning("⚠️ If you see 'BLOCKED BY FIREWALL', it means AgentRouter is actively blocking Streamlit Cloud IPs. Please use Groq or Gemini instead.")
-                    st.session_state.raw_ai_response = res['error']
             else:
                 st.session_state.html_content = res.get('html_content', 'No content')
                 st.session_state.meta_desc = res.get('meta_description', '')
@@ -328,13 +312,8 @@ else:
                 else: st.error("❌ Image upload failed.")
 
     with c2:
-        tab1, tab2, tab3 = st.tabs(["👁️ Visual Preview", "📋 HTML Code", "🐛 Debug"])
+        tab1, tab2 = st.tabs(["👁️ Visual Preview", "📋 HTML Code"])
         with tab1:
             if st.session_state.html_content:
                 components.html(f"""<div style="background-color: white; color: black; padding: 20px; font-family: sans-serif;">{st.session_state.html_content}</div>""", height=800, scrolling=True)
         with tab2: st.text_area("Copy Code", value=st.session_state.html_content, height=800)
-        with tab3: 
-            st.write("Last Debug Log:")
-            st.code(st.session_state.debug_log)
-            st.write("Raw Server Response:")
-            st.text(st.session_state.get('raw_ai_response', 'No data'))
