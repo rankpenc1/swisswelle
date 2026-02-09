@@ -1,6 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
-from bs4 import BeautifulSoup
 import google.generativeai as genai
 from groq import Groq
 import json
@@ -8,16 +6,14 @@ import re
 import time 
 import requests
 from requests.auth import HTTPBasicAuth
-from duckduckgo_search import DDGS
 from PIL import Image
 import io
 
-st.set_page_config(page_title="SwissWelle V61", page_icon="🔓", layout="wide")
+st.set_page_config(page_title="SwissWelle V62", page_icon="📦", layout="wide")
 
-# --- SECRETS RETRIEVAL (No Login Screen) ---
-def get_secret(key): return st.secrets[key] if key in st.secrets else ""
+# --- SECRETS ---
+def get_secret(key): return st.secrets.get(key, "")
 
-# Init Secrets
 default_gemini_key = get_secret("gemini_api_key")
 default_groq_key = get_secret("groq_api_key")
 default_wp_url = get_secret("wp_url")
@@ -27,37 +23,36 @@ default_wp_user = get_secret("wp_user")
 default_wp_app_pass = get_secret("wp_app_pass")
 
 def reset_app():
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
+    st.session_state.clear()
     st.rerun()
 
-# Session State Init
-for k in ['generated', 'html_content', 'meta_desc', 'image_map', 'p_name', 'uploaded_files_cache']:
-    if k not in st.session_state: st.session_state[k] = None if k == 'p_name' else ""
-if 'image_map' not in st.session_state or not isinstance(st.session_state.image_map, dict):
-    st.session_state.image_map = {} # Stores URLs
-if 'uploaded_files_cache' not in st.session_state or not isinstance(st.session_state.uploaded_files_cache, list):
-    st.session_state.uploaded_files_cache = [] # Stores Uploaded Bytes
+# Init State
+if 'generated' not in st.session_state: st.session_state.generated = False
+if 'html_content' not in st.session_state: st.session_state.html_content = ""
+if 'meta_desc' not in st.session_state: st.session_state.meta_desc = ""
+if 'final_images' not in st.session_state: st.session_state.final_images = [] # Stores (type, data) tuples
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V61")
-    st.caption("Direct Access Mode")
+    st.title("🌿 SwissWelle V62")
+    st.caption("Bulk Upload & Publish")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
         ai_provider = st.radio("Select AI Provider:", ["Groq", "Gemini"], index=0)
         
         api_key = ""
-        valid_model = ""
+        model_id = ""
 
-        if ai_provider == "Gemini":
-            api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
-            valid_model = "gemini-1.5-flash" # Will fallback to pro if fails
-            
-        elif ai_provider == "Groq":
+        if ai_provider == "Groq":
             api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
-            valid_model = "llama-3.3-70b-versatile"
+            model_id = "llama-3.3-70b-versatile"
+            st.caption("⚡ Super Fast (Text Only)")
+            
+        elif ai_provider == "Gemini":
+            api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
+            model_id = "gemini-1.5-flash"
+            st.caption("🖼️ Can see images")
 
     with st.expander("Website Config", expanded=False):
         wp_url = st.text_input("WP URL", value=default_wp_url)
@@ -66,12 +61,11 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- CORE FUNCTIONS ---
+# --- FUNCTIONS ---
 
-def extract_json_safely(text):
+def extract_json(text):
     if not text: return None
-    text = re.sub(r'```json', '', text)
-    text = re.sub(r'```', '', text)
+    text = re.sub(r'```json', '', text).replace('```', '')
     try: return json.loads(text)
     except:
         try:
@@ -80,115 +74,145 @@ def extract_json_safely(text):
         except: pass
     return None
 
-def ai_process(provider, key, model_id, p_name, text):
-    # Context now relies mostly on Product Name since images are manual
-    instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. TASKS: 1. Write HTML description (h2, h3, ul, p). 2. Write RankMath SEO Meta Description."""
-    data_context = f"Product: {p_name}\nContext: {text[:2000]}"
-    output_format = """JSON OUTPUT ONLY: { "html_content": "...", "meta_description": "..." }"""
-    final_prompt = f"{instruction}\n{data_context}\n{output_format}"
+def ai_process(provider, key, model, p_name, images_data=None):
+    instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. 
+    TASKS: 
+    1. Write an engaging HTML description (h2, h3, ul, p) for the product.
+    2. Write a RankMath SEO Meta Description (German).
+    
+    Output JSON ONLY: { "html_content": "...", "meta_description": "..." }"""
+    
+    prompt = f"Product Name: {p_name}\n\n{instruction}"
 
-    raw_response = ""
     try:
-        if provider == "Gemini":
-            genai.configure(api_key=key)
-            try:
-                # Try Flash
-                model = genai.GenerativeModel("gemini-1.5-flash")
-                res = model.generate_content(final_prompt, generation_config={"response_mime_type": "application/json"})
-                raw_response = res.text
-            except:
-                try:
-                    # Fallback to Pro
-                    model = genai.GenerativeModel("gemini-pro")
-                    res = model.generate_content(final_prompt)
-                    raw_response = res.text
-                except Exception as e: return {"error": f"Gemini Error: {str(e)}"}
-
-        elif provider == "Groq":
-            client = Groq(api_key=key)
-            response = client.chat.completions.create(
-                model=model_id, 
-                messages=[{"role": "user", "content": final_prompt}],
-                response_format={ 'type': 'json_object' }
-            )
-            raw_response = response.choices[0].message.content
-
-        parsed = extract_json_safely(raw_response)
-        if parsed: return parsed
-        else: return {"error": f"JSON Parse Failed. Raw: {raw_response[:500]}"}
-
-    except Exception as e: return {"error": f"AI Error: {str(e)}"}
-
-# --- UPLOAD TO WORDPRESS ---
-def upload_media(file_obj, filename, wp_url, user, password, alt):
-    try:
-        # Determine if it's bytes (upload) or string (url)
-        if isinstance(file_obj, str): # URL
-            img_data = requests.get(file_obj, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).content
-            fname = f"{alt[:10].replace(' ', '-').lower()}-{int(time.time())}.webp"
-        else: # File Object
-            img_data = file_obj.getvalue()
-            fname = file_obj.name
-            
-        api_url = f"{wp_url}/wp-json/wp/v2/media"
-        headers = {
-            'Content-Disposition': f'attachment; filename={fname}',
-            'Content-Type': 'image/jpeg' # Defaulting to jpeg/webp logic handles most
-        }
+        raw_response = ""
         
+        if provider == "Groq":
+            client = Groq(api_key=key)
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
+            raw_response = completion.choices[0].message.content
+
+        elif provider == "Gemini":
+            genai.configure(api_key=key)
+            gen_model = genai.GenerativeModel(model)
+            
+            # If we have images and Gemini supports vision, we could pass them.
+            # For stability V62, we stick to text-based generation based on Title.
+            response = gen_model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            raw_response = response.text
+
+        return extract_json(raw_response)
+
+    except Exception as e:
+        return {"error": str(e)}
+
+def upload_media_to_wp(item, wp_url, user, password, alt_text):
+    try:
+        api_url = f"{wp_url}/wp-json/wp/v2/media"
+        filename = f"prod-{int(time.time())}.jpg"
+        
+        # Prepare Data
+        if item['type'] == 'file':
+            # It's an UploadedFile object
+            img_data = item['data'].getvalue()
+            filename = item['data'].name
+        else:
+            # It's a URL string
+            r = requests.get(item['data'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+            if r.status_code != 200: return None, "Download failed"
+            img_data = r.content
+            filename = f"{alt_text[:5].strip()}-{int(time.time())}.jpg"
+
+        headers = {
+            'Content-Disposition': f'attachment; filename={filename}',
+            'Content-Type': 'image/jpeg' 
+        }
+
+        # Upload
         r = requests.post(api_url, data=img_data, headers=headers, auth=HTTPBasicAuth(user, password), verify=False)
         
         if r.status_code == 201:
             pid = r.json()['id']
-            # Set Alt Text
-            requests.post(f"{api_url}/{pid}", json={"alt_text": alt, "title": alt}, auth=HTTPBasicAuth(user, password), verify=False)
+            # Update Alt Text
+            requests.post(f"{api_url}/{pid}", json={"alt_text": alt_text, "title": alt_text}, auth=HTTPBasicAuth(user, password), verify=False)
             return pid, None
-        return None, f"Status {r.status_code}: {r.text[:100]}"
+        
+        return None, f"WP Error {r.status_code}: {r.text[:100]}"
+        
     except Exception as e:
         return None, str(e)
 
-def publish(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
+def publish_product(title, desc, meta, image_ids, wp_url, ck, cs):
     try:
-        wcapi = API(url=wp_url, consumer_key=ck, consumer_secret=cs, version="wc/v3", timeout=60, verify_ssl=False)
-        images = [{"id": feat_id}] + [{"id": i} for i in gallery_ids if i != feat_id]
-        data = {
-            "name": title, "description": desc, "status": "draft", "images": images,
-            "type": "simple", "regular_price": "0.00",
-            "meta_data": [{"key": "rank_math_description", "value": meta}, {"key": "rank_math_focus_keyword", "value": title}]
-        }
-        return wcapi.post("products", data)
-    except Exception as e: return f"Publish Error: {str(e)}"
+        wcapi = requests.post(
+            f"{wp_url}/wp-json/wc/v3/products",
+            auth=HTTPBasicAuth(ck, cs),
+            json={
+                "name": title,
+                "description": desc,
+                "status": "draft",
+                "type": "simple",
+                "regular_price": "0.00",
+                "images": [{"id": i} for i in image_ids],
+                "meta_data": [
+                    {"key": "rank_math_description", "value": meta},
+                    {"key": "rank_math_focus_keyword", "value": title}
+                ]
+            },
+            verify=False
+        )
+        return wcapi
+    except Exception as e:
+        return str(e)
 
-# --- UI ---
+# --- MAIN UI ---
+
 if not st.session_state.generated:
-    st.session_state.p_name = st.text_input("Product Name", st.session_state.p_name if st.session_state.p_name else "")
+    st.subheader("1. Product Details")
+    p_name = st.text_input("Product Name", "Boho Macrame Wall Hanging")
     
-    # 1. FILE UPLOADER
-    uploaded_files = st.file_uploader("📂 Upload Images (Bulk)", accept_multiple_files=True, type=['png', 'jpg', 'jpeg', 'webp'])
+    st.subheader("2. Add Images")
     
-    # 2. MANUAL URLS
-    manual_urls = st.text_area("🔗 Paste Image URLs (Optional)", height=70, placeholder="https://example.com/image1.jpg")
+    tab1, tab2 = st.tabs(["📂 Bulk Upload", "🔗 Paste URLs"])
     
-    if st.button("🚀 Generate Content", type="primary"):
-        if not api_key: st.error("No API Key"); st.stop()
-        if not st.session_state.p_name: st.error("Please enter Product Name"); st.stop()
-        if not uploaded_files and not manual_urls.strip(): st.error("Please upload images or paste URLs"); st.stop()
+    final_img_list = []
+    
+    with tab1:
+        uploaded_files = st.file_uploader("Drop images here (Max 200MB)", accept_multiple_files=True, type=['png', 'jpg', 'jpeg', 'webp', 'avif'])
+        if uploaded_files:
+            st.success(f"{len(uploaded_files)} files loaded.")
+            
+    with tab2:
+        url_text = st.text_area("Paste Image URLs (One per line)", height=150)
+    
+    if st.button("🚀 Generate & Prepare", type="primary"):
+        if not api_key: st.error("API Key missing"); st.stop()
+        if not p_name: st.error("Product Name missing"); st.stop()
         
-        with st.status(f"Processing...", expanded=True) as s:
-            # Store inputs in session state for the next step
-            st.session_state.uploaded_files_cache = uploaded_files
+        # Collect Images
+        collected_images = []
+        if uploaded_files:
+            for f in uploaded_files: collected_images.append({'type': 'file', 'data': f})
+        
+        if url_text:
+            urls = [u.strip() for u in url_text.split('\n') if u.strip()]
+            for u in urls: collected_images.append({'type': 'url', 'data': u})
             
-            # Parse URLs
-            url_list = [u.strip() for u in manual_urls.split('\n') if u.strip()]
-            for u in url_list: st.session_state.image_map[u] = "url"
+        if not collected_images:
+            st.error("Please add at least one image (Upload or URL).")
+            st.stop()
             
-            s.write(f"📸 Received {len(uploaded_files)} files and {len(url_list)} URLs")
-            s.write(f"🧠 {ai_provider} is writing...")
+        st.session_state.final_images = collected_images
+        st.session_state.p_name = p_name
+        
+        with st.status("Writing Content...", expanded=True):
+            res = ai_process(ai_provider, api_key, model_id, p_name)
             
-            # Call AI
-            res = ai_process(ai_provider, api_key, valid_model, st.session_state.p_name, f"Product: {st.session_state.p_name}")
-            
-            if "error" in res: 
+            if "error" in res:
                 st.error(res['error'])
             else:
                 st.session_state.html_content = res.get('html_content', '')
@@ -197,80 +221,77 @@ if not st.session_state.generated:
                 st.rerun()
 
 else:
+    # --- PREVIEW & PUBLISH SCREEN ---
     c1, c2 = st.columns([1, 1])
+    
     with c1:
-        st.subheader("Select Images to Publish")
+        st.subheader("📸 Review Images")
+        st.write(f"Total Images: {len(st.session_state.final_images)}")
         
-        # Merge sources for selection
-        # 1. Uploaded Files
-        all_items = [] # (type, data, display_key)
-        
-        for f in st.session_state.uploaded_files_cache:
-            all_items.append(('file', f, f.name))
-            
-        # 2. URLs
-        for u in st.session_state.image_map.keys():
-            all_items.append(('url', u, u))
-            
-        # Selection UI
-        if 'selections' not in st.session_state: st.session_state.selections = {}
-        
-        # Display Grid
+        # Show a few previews
         cols = st.columns(3)
-        valid_selections = []
-        
-        for i, (type_, data, key) in enumerate(all_items):
-            with cols[i % 3]:
-                if type_ == 'file':
-                    st.image(data, use_container_width=True)
-                else:
-                    st.image(data, use_container_width=True)
-                
-                # Checkbox
-                chk_key = f"chk_{i}"
-                if st.checkbox("Select", value=True, key=chk_key):
-                    valid_selections.append((type_, data))
+        for i, img in enumerate(st.session_state.final_images[:6]):
+            with cols[i%3]:
+                if img['type'] == 'file': st.image(img['data'], use_container_width=True)
+                else: st.image(img['data'], use_container_width=True)
+        if len(st.session_state.final_images) > 6:
+            st.info(f"...and {len(st.session_state.final_images)-6} more.")
 
-        st.markdown("---")
+        st.divider()
         
-        if valid_selections:
-            # Featured Image Logic
-            st.write(f"✅ {len(valid_selections)} images selected for upload.")
+        if st.button("📤 Upload & Publish to WordPress", type="primary"):
+            if not wp_url: st.error("WP Config Missing"); st.stop()
             
-            if st.button("📤 Publish to WordPress"):
-                with st.spinner("Uploading images... This may take time."):
-                    gallery_ids = []
-                    feat_id = None
-                    
-                    progress_bar = st.progress(0)
-                    
-                    for idx, (type_, data) in enumerate(valid_selections):
-                        # Upload
-                        pid, err = upload_media(data, st.session_state.p_name, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
-                        
-                        if pid:
-                            gallery_ids.append(pid)
-                            if idx == 0: feat_id = pid # First image is featured
-                        else:
-                            st.error(f"Failed to upload image {idx+1}: {err}")
-                        
-                        progress_bar.progress((idx + 1) / len(valid_selections))
-                    
-                    if feat_id:
-                        res = publish(st.session_state.p_name, st.session_state.html_content, st.session_state.meta_desc, feat_id, gallery_ids, wp_url, wc_ck, wc_cs)
-                        
-                        if isinstance(res, str): st.error(res)
-                        elif res.status_code == 201:
-                            st.success("✅ Product Published Successfully!")
-                            st.markdown(f"[👉 **Edit in WordPress**]({res.json().get('permalink')})")
-                            if st.button("Start New"): reset_app()
-                        else: st.error(f"Publish Failed: {res.text}")
-                    else:
-                        st.error("No images could be uploaded. Check WordPress credentials.")
+            uploaded_ids = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            total = len(st.session_state.final_images)
+            
+            for i, img in enumerate(st.session_state.final_images):
+                status_text.text(f"Uploading image {i+1}/{total}...")
+                
+                pid, err = upload_media_to_wp(
+                    img, 
+                    st.session_state.get('wp_url'), 
+                    st.session_state.get('wp_user'), 
+                    st.session_state.get('wp_app_pass'), 
+                    st.session_state.p_name
+                )
+                
+                if pid: uploaded_ids.append(pid)
+                else: st.warning(f"Failed img {i+1}: {err}")
+                
+                progress_bar.progress((i + 1) / total)
+            
+            if uploaded_ids:
+                status_text.text("Creating Product Draft...")
+                res = publish_product(
+                    st.session_state.p_name,
+                    st.session_state.html_content,
+                    st.session_state.meta_desc,
+                    uploaded_ids,
+                    st.session_state.get('wp_url'),
+                    st.session_state.get('wc_ck'),
+                    st.session_state.get('wc_cs')
+                )
+                
+                if isinstance(res, str):
+                    st.error(f"Publish Error: {res}")
+                elif res.status_code == 201:
+                    st.balloons()
+                    st.success("✅ Product Published!")
+                    st.markdown(f"### [👉 Click to Edit in WordPress]({res.json().get('permalink')})")
+                    if st.button("Start New Post"): reset_app()
+                else:
+                    st.error(f"API Error {res.status_code}: {res.text}")
+            else:
+                st.error("No images uploaded successfully.")
 
     with c2:
-        tab1, tab2 = st.tabs(["👁️ Visual Preview", "📋 HTML Code"])
-        with tab1:
-            if st.session_state.html_content:
-                components.html(f"""<div style="background-color: white; color: black; padding: 20px; font-family: sans-serif;">{st.session_state.html_content}</div>""", height=800, scrolling=True)
-        with tab2: st.text_area("Copy Code", value=st.session_state.html_content, height=800)
+        st.subheader("📝 Content Preview")
+        tab_view, tab_code = st.tabs(["👁️ Visual", "💻 HTML"])
+        with tab_view:
+            components.html(st.session_state.html_content, height=600, scrolling=True)
+        with tab_code:
+            st.text_area("HTML", value=st.session_state.html_content, height=600)
