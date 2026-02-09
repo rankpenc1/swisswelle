@@ -12,26 +12,12 @@ from duckduckgo_search import DDGS
 from PIL import Image
 import io
 
-st.set_page_config(page_title="SwissWelle V60", page_icon="📂", layout="wide")
+st.set_page_config(page_title="SwissWelle V61", page_icon="🔓", layout="wide")
 
-# --- 1. SECURITY ---
-def check_password():
-    if "password_correct" not in st.session_state: st.session_state.password_correct = False
-    def password_entered():
-        if st.session_state["password"] == st.secrets["app_login_password"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else: st.session_state["password_correct"] = False
-    if not st.session_state["password_correct"]:
-        st.text_input("Enter Admin Password", type="password", on_change=password_entered, key="password")
-        return False
-    return True
-
-if not check_password(): st.stop()
-
+# --- SECRETS RETRIEVAL (No Login Screen) ---
 def get_secret(key): return st.secrets[key] if key in st.secrets else ""
 
-# Init Secrets (AgentRouter Removed)
+# Init Secrets
 default_gemini_key = get_secret("gemini_api_key")
 default_groq_key = get_secret("groq_api_key")
 default_wp_url = get_secret("wp_url")
@@ -42,7 +28,7 @@ default_wp_app_pass = get_secret("wp_app_pass")
 
 def reset_app():
     for key in list(st.session_state.keys()):
-        if key != 'password_correct': del st.session_state[key]
+        del st.session_state[key]
     st.rerun()
 
 # Session State Init
@@ -55,8 +41,8 @@ if 'uploaded_files_cache' not in st.session_state or not isinstance(st.session_s
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V60")
-    st.caption("Upload & Publish")
+    st.title("🌿 SwissWelle V61")
+    st.caption("Direct Access Mode")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Brain Settings", expanded=True):
@@ -248,7 +234,7 @@ else:
         st.markdown("---")
         
         if valid_selections:
-            # Featured Image Logic - Just pick the first selected for simplicity or add a selector
+            # Featured Image Logic
             st.write(f"✅ {len(valid_selections)} images selected for upload.")
             
             if st.button("📤 Publish to WordPress"):
