@@ -1,7 +1,5 @@
 import streamlit as st
 import streamlit.components.v1 as components
-import google.generativeai as genai
-from groq import Groq
 import json
 import re
 import time 
@@ -12,13 +10,16 @@ from selenium.webdriver.chrome.options import Options
 from PIL import Image
 import io
 
-st.set_page_config(page_title="SwissWelle V68", page_icon="📦", layout="wide")
+st.set_page_config(page_title="SwissWelle V69", page_icon="🚀", layout="wide")
 
-# --- CONFIG ---
+# --- CONFIG & SECRETS ---
 def get_secret(key): return st.secrets.get(key, "")
 
-default_gemini_key = get_secret("gemini_api_key")
-default_groq_key = get_secret("groq_api_key")
+# User Provided Keys (Set as Defaults)
+DEFAULT_SAMBANOVA_KEY = "f4364261-3ff6-4bfc-9a0f-b887329fa15d"
+DEFAULT_OPENROUTER_KEY = "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"
+DEFAULT_GROQ_KEY = get_secret("groq_api_key")
+
 default_wp_url = get_secret("wp_url")
 default_wc_ck = get_secret("wc_ck")
 default_wc_cs = get_secret("wc_cs")
@@ -29,32 +30,39 @@ def reset_app():
     st.session_state.clear()
     st.rerun()
 
+# Init Session State
 if 'generated' not in st.session_state: st.session_state.generated = False
 if 'html_content' not in st.session_state: st.session_state.html_content = ""
 if 'meta_desc' not in st.session_state: st.session_state.meta_desc = ""
 if 'final_images' not in st.session_state: st.session_state.final_images = []
 if 'p_name' not in st.session_state: st.session_state.p_name = ""
+if 'selected_indices' not in st.session_state: st.session_state.selected_indices = []
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V68")
-    st.caption("Upload & Number Select")
+    st.title("🌿 SwissWelle V69")
+    st.caption("Perfect Scraper + Multi AI")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Settings", expanded=True):
-        # GROQ DEFAULT (Since it works)
-        ai_provider = st.radio("Provider:", ["Groq", "Gemini"], index=0)
+        ai_provider = st.radio("Provider:", ["SambaNova", "OpenRouter", "Groq"], index=0)
         
         api_key = ""
         model_id = ""
 
-        if ai_provider == "Groq":
-            api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
+        if ai_provider == "SambaNova":
+            api_key = st.text_input("SambaNova Key", value=DEFAULT_SAMBANOVA_KEY, type="password")
+            model_id = "Meta-Llama-3.1-70B-Instruct"
+            st.caption("⚡ Ultra Fast Llama 3.1 70B")
+
+        elif ai_provider == "OpenRouter":
+            api_key = st.text_input("OpenRouter Key", value=DEFAULT_OPENROUTER_KEY, type="password")
+            model_id = "google/gemini-2.0-flash-exp:free" # Using Free Gemini via OpenRouter
+            st.caption("🌐 Access to Gemini/Deepseek Free")
+
+        elif ai_provider == "Groq":
+            api_key = st.text_input("Groq Key", value=DEFAULT_GROQ_KEY, type="password")
             model_id = "llama-3.3-70b-versatile"
-            
-        elif ai_provider == "Gemini":
-            api_key = st.text_input("Gemini Key", value=default_gemini_key, type="password")
-            model_id = "gemini-1.5-flash" # Requires updated library
 
     with st.expander("Website Config", expanded=False):
         wp_url = st.text_input("WP URL", value=default_wp_url)
@@ -63,8 +71,7 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- FUNCTIONS ---
-
+# --- SCRAPER (TOUCH NOT!) ---
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
@@ -82,18 +89,19 @@ def scrape(url):
         driver.get(url)
         time.sleep(2)
         title = driver.title.split('|')[0].strip()
-        # Filter bad titles
         if "Captcha" in title or "Login" in title: title = ""
         
         page_source = driver.page_source
+        # V68 Logic Preserved
         raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp))', page_source)
         for m in raw_matches:
-            # Basic cleanup
             m = m.split('?')[0]
             if '32x32' not in m and '50x50' not in m and 'search' not in m:
                 candidates.add(m)
     except: pass
     return title, list(candidates)
+
+# --- AI FUNCTIONS ---
 
 def extract_json(text):
     if not text: return None
@@ -114,30 +122,39 @@ def ai_process(provider, key, model, p_name):
     Output JSON ONLY: { "html_content": "...", "meta_description": "..." }"""
     
     prompt = f"Product: {p_name}\n\n{instruction}"
+    
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "response_format": {"type": "json_object"}
+    }
+
+    url = ""
+    if provider == "SambaNova":
+        url = "https://api.sambanova.ai/v1/chat/completions"
+    elif provider == "OpenRouter":
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers["HTTP-Referer"] = "https://swisswelle.streamlit.app"
+    elif provider == "Groq":
+        url = "https://api.groq.com/openai/v1/chat/completions"
 
     try:
-        raw_response = ""
-        if provider == "Groq":
-            client = Groq(api_key=key)
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"}
-            )
-            raw_response = completion.choices[0].message.content
-        elif provider == "Gemini":
-            genai.configure(api_key=key)
-            try:
-                mod = genai.GenerativeModel("gemini-1.5-flash")
-                res = mod.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                raw_response = res.text
-            except:
-                mod = genai.GenerativeModel("gemini-pro")
-                res = mod.generate_content(prompt)
-                raw_response = res.text
+        r = requests.post(url, json=payload, headers=headers, timeout=30)
+        if r.status_code == 200:
+            data = r.json()
+            content = data['choices'][0]['message']['content']
+            return extract_json(content)
+        else:
+            return {"error": f"API Error {r.status_code}: {r.text}"}
+    except Exception as e:
+        return {"error": str(e)}
 
-        return extract_json(raw_response)
-    except Exception as e: return {"error": str(e)}
+# --- UPLOAD & PUBLISH ---
 
 def upload_wp(item, wp_url, user, password, p_name):
     try:
@@ -165,9 +182,7 @@ def upload_wp(item, wp_url, user, password, p_name):
 
 def publish_product(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
     try:
-        # Construct Image List: Featured First
         img_payload = [{"id": feat_id}] + [{"id": i} for i in gallery_ids if i != feat_id]
-        
         data = {
             "name": title, "description": desc, "status": "draft", "type": "simple",
             "images": img_payload,
@@ -180,47 +195,42 @@ def publish_product(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
 
 if not st.session_state.generated:
     st.subheader("1. Product Info")
-    
     col1, col2 = st.columns([3, 1])
     with col1:
         p_name = st.text_input("Product Name", st.session_state.p_name)
-    with col2:
-        st.write("") # Spacer
-        
-    st.subheader("2. Images")
-    st.caption("Step 1: Try Scraping (Optional)")
-    url_input = st.text_input("AliExpress URL")
     
-    if st.button("🔍 Scrape Images", type="secondary"):
-        if url_input:
-            with st.spinner("Scraping..."):
-                t, imgs = scrape(url_input)
-                if t: st.session_state.p_name = t
-                if imgs:
-                    for u in imgs: st.session_state.final_images.append({'type': 'url', 'data': u})
-                    st.success(f"Found {len(imgs)} images")
-                    st.rerun()
-                else:
-                    st.error("No images found (Blocked). Please upload below.")
+    st.subheader("2. Images")
+    tab1, tab2 = st.tabs(["📂 Upload (Backup)", "🔗 Scrape (Recommended)"])
+    
+    with tab2:
+        url_input = st.text_input("AliExpress URL")
+        if st.button("🔍 Scrape URL", type="primary"):
+            if url_input:
+                with st.spinner("Scraping (Don't touch)..."):
+                    t, imgs = scrape(url_input)
+                    if t: st.session_state.p_name = t
+                    if imgs:
+                        for u in imgs: st.session_state.final_images.append({'type': 'url', 'data': u})
+                        st.success(f"Found {len(imgs)} images")
+                        st.rerun()
+                    else:
+                        st.error("No images found (Blocked). Use Upload.")
 
-    st.caption("Step 2: Upload Manually (Required if scraping fails)")
-    upl = st.file_uploader("Drop images here", accept_multiple_files=True, type=['jpg','png','webp','jpeg'])
-    if upl:
-        # Add only new files
-        existing_names = [x['data'].name for x in st.session_state.final_images if x['type'] == 'file']
-        count = 0
-        for f in upl:
-            if f.name not in existing_names:
-                st.session_state.final_images.append({'type': 'file', 'data': f})
-                count += 1
-        if count > 0: st.success(f"Added {count} uploaded images")
+    with tab1:
+        upl = st.file_uploader("Drop images here", accept_multiple_files=True, type=['jpg','png','webp','jpeg'])
+        if upl:
+            existing_names = [x['data'].name for x in st.session_state.final_images if x['type'] == 'file']
+            count = 0
+            for f in upl:
+                if f.name not in existing_names:
+                    st.session_state.final_images.append({'type': 'file', 'data': f})
+                    count += 1
+            if count > 0: st.success(f"Added {count} files")
 
-    # PREVIEW BEFORE GEN
+    # PREVIEW & DELETE
     if st.session_state.final_images:
         st.divider()
-        st.write(f"**Total Selected: {len(st.session_state.final_images)}**")
-        
-        # Grid view
+        st.write(f"**Total: {len(st.session_state.final_images)}**")
         cols = st.columns(6)
         for i, item in enumerate(st.session_state.final_images):
             with cols[i % 6]:
@@ -233,10 +243,9 @@ if not st.session_state.generated:
     st.divider()
     if st.button("🚀 Generate Content", type="primary"):
         if not api_key or not p_name: st.error("Missing Data"); st.stop()
-        if not st.session_state.final_images: st.error("No Images!"); st.stop()
-        
         st.session_state.p_name = p_name
-        with st.status("Writing Content..."):
+        
+        with st.status(f"Thinking with {ai_provider}..."):
             res = ai_process(ai_provider, api_key, model_id, p_name)
             if "error" in res: st.error(res['error'])
             else:
@@ -250,67 +259,89 @@ else:
     c1, c2 = st.columns([1, 1])
     
     with c1:
-        st.subheader("🖼️ Select Featured Image")
+        st.subheader("🖼️ Select Images for Website")
+        st.caption("Uncheck images you don't want to publish.")
+        
+        # 1. SELECTION UI
         img_list = st.session_state.final_images
         
-        # 1. Show Numbered Grid
+        # Initialize selection map if not exists
+        if 'selections' not in st.session_state:
+            st.session_state.selections = {i: True for i in range(len(img_list))}
+
+        # Show Grid with Checkboxes
         cols = st.columns(4)
         for i, item in enumerate(img_list):
             with cols[i % 4]:
                 if item['type'] == 'file': st.image(item['data'], use_container_width=True)
                 else: st.image(item['data'], use_container_width=True)
-                st.markdown(f"<div style='text-align:center; font-weight:bold;'>Image {i+1}</div>", unsafe_allow_html=True)
+                
+                # Checkbox for selection
+                st.session_state.selections[i] = st.checkbox(f"Keep #{i+1}", value=st.session_state.selections[i], key=f"sel_{i}")
+
+        # Filter Selected Images
+        selected_indices = [i for i, sel in st.session_state.selections.items() if sel]
+        selected_images = [img_list[i] for i in selected_indices]
         
         st.divider()
+        st.write(f"**Selected for Publish:** {len(selected_images)}")
         
-        # 2. Select Featured by Number
-        opts = list(range(1, len(img_list)+1))
-        feat_idx = st.selectbox("⭐ Choose Featured Image Number:", opts, index=0)
-        
-        if st.button("📤 Upload & Publish", type="primary"):
-            status = st.empty()
-            prog = st.progress(0)
-            
-            # Logic: Featured is at feat_idx - 1
-            feat_img_obj = img_list[feat_idx - 1]
-            gallery_objs = [img for i, img in enumerate(img_list) if i != (feat_idx - 1)]
-            
-            # Upload Featured
-            status.text("Uploading Featured Image...")
-            feat_id, err = upload_wp(feat_img_obj, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
-            
-            if not feat_id:
-                st.error(f"Featured Upload Failed: {err}")
-                st.stop()
-                
-            # Upload Gallery
-            gallery_ids = []
-            total = len(gallery_objs)
-            for idx, img in enumerate(gallery_objs):
-                status.text(f"Uploading Gallery {idx+1}/{total}...")
-                pid, err = upload_wp(img, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
-                if pid: gallery_ids.append(pid)
-                prog.progress((idx+1)/total)
-            
-            # Publish
-            status.text("Publishing...")
-            res = publish_product(
-                st.session_state.p_name,
-                st.session_state.html_content,
-                st.session_state.meta_desc,
-                feat_id, gallery_ids, wp_url, wc_ck, wc_cs
+        if len(selected_images) > 0:
+            # 2. FEATURED IMAGE SELECTOR (Only from Selected)
+            # Map dropdown index to the original selected_image list
+            feat_idx = st.selectbox(
+                "⭐ Choose Featured Image (from selected):", 
+                range(len(selected_images)), 
+                format_func=lambda x: f"Image #{selected_indices[x]+1}"
             )
             
-            if isinstance(res, str): st.error(res)
-            elif res.status_code == 201:
-                st.balloons()
-                st.success("✅ Published!")
-                st.markdown(f"[👉 **Click to Edit**]({res.json().get('permalink')})")
-                if st.button("New Post"): reset_app()
-            else: st.error(res.text)
+            # Show Preview of Featured
+            st.image(selected_images[feat_idx]['data'] if selected_images[feat_idx]['type'] == 'file' else selected_images[feat_idx]['data'], width=150, caption="Selected Featured")
+
+            if st.button("📤 Upload & Publish", type="primary"):
+                feat_img_obj = selected_images[feat_idx]
+                gallery_objs = [img for i, img in enumerate(selected_images) if i != feat_idx]
+                
+                status = st.empty()
+                prog = st.progress(0)
+                
+                # Upload Featured
+                status.text("Uploading Featured Image...")
+                feat_id, err = upload_wp(feat_img_obj, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
+                
+                if not feat_id:
+                    st.error(f"Featured Upload Failed: {err}")
+                    st.stop()
+                
+                # Upload Gallery
+                gallery_ids = []
+                total = len(gallery_objs)
+                for idx, img in enumerate(gallery_objs):
+                    status.text(f"Uploading Gallery {idx+1}/{total}...")
+                    pid, err = upload_wp(img, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
+                    if pid: gallery_ids.append(pid)
+                    if total > 0: prog.progress((idx+1)/total)
+                
+                # Publish
+                status.text("Publishing...")
+                res = publish_product(
+                    st.session_state.p_name,
+                    st.session_state.html_content,
+                    st.session_state.meta_desc,
+                    feat_id, gallery_ids, wp_url, wc_ck, wc_cs
+                )
+                
+                if isinstance(res, str): st.error(res)
+                elif res.status_code == 201:
+                    st.balloons()
+                    st.success("✅ Published!")
+                    st.markdown(f"[👉 **Click to Edit**]({res.json().get('permalink')})")
+                    if st.button("New Post"): reset_app()
+                else: st.error(res.text)
+        else:
+            st.warning("Please select at least one image.")
 
     with c2:
         st.subheader("📝 Content")
-        # Fixed White BG for readability
         html_prev = f"""<div style="background:white; color:black; padding:20px; border-radius:8px;">{st.session_state.html_content}</div>"""
         components.html(html_prev, height=800, scrolling=True)
