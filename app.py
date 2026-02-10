@@ -10,13 +10,12 @@ from selenium.webdriver.chrome.options import Options
 from PIL import Image
 import io
 
-st.set_page_config(page_title="SwissWelle V73", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="SwissWelle V74", page_icon="🛡️", layout="wide")
 
 # --- SECRETS MANAGER ---
 def get_secret(key):
     return st.secrets.get(key, "")
 
-# Load Keys
 default_sambanova_key = get_secret("sambanova_api_key")
 default_openrouter_key = get_secret("openrouter_api_key")
 default_groq_key = get_secret("groq_api_key")
@@ -31,17 +30,17 @@ def reset_app():
     st.session_state.clear()
     st.rerun()
 
-# Init State
 if 'generated' not in st.session_state: st.session_state.generated = False
 if 'html_content' not in st.session_state: st.session_state.html_content = ""
 if 'meta_desc' not in st.session_state: st.session_state.meta_desc = ""
 if 'final_images' not in st.session_state: st.session_state.final_images = []
 if 'p_name' not in st.session_state: st.session_state.p_name = ""
+if 'raw_response' not in st.session_state: st.session_state.raw_response = ""
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V73")
-    st.caption("Editable Model IDs")
+    st.title("🌿 SwissWelle V74")
+    st.caption("Crash-Proof AI")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Settings", expanded=True):
@@ -52,15 +51,13 @@ with st.sidebar:
 
         if ai_provider == "SambaNova":
             api_key = st.text_input("SambaNova Key", value=default_sambanova_key, type="password")
-            # Changed to 8B (Most likely to be free/available)
+            # UPDATED STABLE MODEL
             model_id = st.text_input("Model ID", value="Meta-Llama-3.1-8B-Instruct") 
-            st.caption("Try: Meta-Llama-3.1-8B-Instruct")
 
         elif ai_provider == "OpenRouter":
             api_key = st.text_input("OpenRouter Key", value=default_openrouter_key, type="password")
-            # Changed to Flash Lite (Free)
-            model_id = st.text_input("Model ID", value="google/gemini-2.0-flash-lite-preview-02-05:free")
-            st.caption("Try: google/gemini-2.0-flash-exp:free")
+            # UPDATED STABLE MODEL (Gemini Experimental Free)
+            model_id = st.text_input("Model ID", value="google/gemini-2.0-flash-exp:free")
 
         elif ai_provider == "Groq":
             api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
@@ -73,7 +70,7 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- SCRAPER ---
+# --- SCRAPER (Unchanged) ---
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
@@ -104,16 +101,24 @@ def scrape(url):
     return title, list(candidates)
 
 # --- AI ---
-def extract_json(text):
-    if not text: return None
-    text = re.sub(r'```json', '', text).replace('```', '')
-    try: return json.loads(text)
-    except:
+def safe_json_parse(text):
+    """Never returns None, always a dict"""
+    if not text: return {"error": "Empty response from AI"}
+    
+    # Cleaning
+    clean_text = re.sub(r'```json', '', text)
+    clean_text = re.sub(r'```', '', clean_text).strip()
+    
+    try:
+        return json.loads(clean_text)
+    except json.JSONDecodeError:
+        # Try finding JSON blob
         try:
             match = re.search(r'\{.*\}', text, re.DOTALL)
             if match: return json.loads(match.group())
         except: pass
-    return None
+        
+        return {"error": "JSON Parse Failed", "raw_output": text}
 
 def ai_process(provider, key, model, p_name):
     instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. 
@@ -129,34 +134,41 @@ def ai_process(provider, key, model, p_name):
         "Content-Type": "application/json"
     }
     
+    # OpenRouter Specifics
+    if provider == "OpenRouter":
+        headers["HTTP-Referer"] = "https://swisswelle.streamlit.app"
+    
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}]
     }
     
-    # Provider Specifics
+    # Provider URLs
     url = ""
     if provider == "SambaNova":
         url = "https://api.sambanova.ai/v1/chat/completions"
-        # SambaNova strictness
+        # SambaNova prefers system prompt for JSON instruction
+        payload['messages'].insert(0, {"role": "system", "content": "You are a JSON generator. Output only valid JSON."})
     elif provider == "OpenRouter":
         url = "https://openrouter.ai/api/v1/chat/completions"
-        headers["HTTP-Referer"] = "https://swisswelle.streamlit.app"
     elif provider == "Groq":
         url = "https://api.groq.com/openai/v1/chat/completions"
         payload["response_format"] = {"type": "json_object"}
 
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=60)
+        
         if r.status_code == 200:
             try:
                 content = r.json()['choices'][0]['message']['content']
-                return extract_json(content)
-            except:
-                return {"error": f"Parse Error: {r.text}"}
+                st.session_state.raw_response = content # Save raw for debugging
+                return safe_json_parse(content)
+            except Exception as e:
+                return {"error": f"Structure Error: {str(e)}", "raw": r.text}
         else:
             return {"error": f"API Error {r.status_code}: {r.text}"}
-    except Exception as e: return {"error": str(e)}
+            
+    except Exception as e: return {"error": f"Connection Error: {str(e)}"}
 
 # --- UPLOAD & PUBLISH ---
 def upload_wp(item, wp_url, user, password, p_name):
@@ -252,9 +264,15 @@ if not st.session_state.generated:
         
         with st.status(f"Thinking with {ai_provider}..."):
             res = ai_process(ai_provider, api_key, model_id, p_name)
-            if "error" in res: st.error(res['error'])
+            
+            # SAFE CHECK (Fixes TypeError)
+            if res and "error" in res:
+                st.error(res['error'])
+                if "raw_output" in res:
+                    st.warning("Raw Output from AI (Parsing Failed):")
+                    st.code(res['raw_output'])
             else:
-                st.session_state.html_content = res.get('html_content', '')
+                st.session_state.html_content = res.get('html_content', 'No Content')
                 st.session_state.meta_desc = res.get('meta_description', '')
                 st.session_state.generated = True
                 st.rerun()
@@ -316,5 +334,8 @@ else:
 
     with c2:
         st.subheader("📝 Content")
-        html_prev = f"""<div style="background:white; color:black; padding:20px; border-radius:8px;">{st.session_state.html_content}</div>"""
-        components.html(html_prev, height=800, scrolling=True)
+        if st.session_state.html_content:
+            html_prev = f"""<div style="background:white; color:black; padding:20px; border-radius:8px;">{st.session_state.html_content}</div>"""
+            components.html(html_prev, height=800, scrolling=True)
+        else:
+            st.warning("No content generated")
