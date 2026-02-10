@@ -10,14 +10,14 @@ from selenium.webdriver.chrome.options import Options
 from PIL import Image
 import io
 
-st.set_page_config(page_title="SwissWelle V70", page_icon="🔒", layout="wide")
+st.set_page_config(page_title="SwissWelle V72", page_icon="🔐", layout="wide")
 
-# --- SECURE CONFIG ---
+# --- SECRETS MANAGER ---
 def get_secret(key):
-    # Try to get from secrets, return empty string if not found
+    # This reads from the Streamlit Cloud "Secrets" panel you set up
     return st.secrets.get(key, "")
 
-# Load Keys from Secrets
+# Load Keys directly from Secrets
 default_sambanova_key = get_secret("sambanova_api_key")
 default_openrouter_key = get_secret("openrouter_api_key")
 default_groq_key = get_secret("groq_api_key")
@@ -32,7 +32,7 @@ def reset_app():
     st.session_state.clear()
     st.rerun()
 
-# Init Session State
+# Init State
 if 'generated' not in st.session_state: st.session_state.generated = False
 if 'html_content' not in st.session_state: st.session_state.html_content = ""
 if 'meta_desc' not in st.session_state: st.session_state.meta_desc = ""
@@ -41,8 +41,8 @@ if 'p_name' not in st.session_state: st.session_state.p_name = ""
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V70")
-    st.caption("Secure Secrets Manager")
+    st.title("🌿 SwissWelle V72")
+    st.caption("Updated Models (Feb 2026)")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Settings", expanded=True):
@@ -53,13 +53,15 @@ with st.sidebar:
 
         if ai_provider == "SambaNova":
             api_key = st.text_input("SambaNova Key", value=default_sambanova_key, type="password")
-            model_id = "Meta-Llama-3.1-70B-Instruct"
-            st.caption("⚡ Llama 3.1 70B (Fast)")
+            # UPDATED: Using the flagship 405B model which is currently active
+            model_id = "Meta-Llama-3.1-405B-Instruct" 
+            st.caption("⚡ Model: Llama 3.1 405B")
 
         elif ai_provider == "OpenRouter":
             api_key = st.text_input("OpenRouter Key", value=default_openrouter_key, type="password")
-            model_id = "google/gemini-2.0-flash-exp:free"
-            st.caption("🌐 Gemini/Deepseek Free")
+            # UPDATED: Using the latest Gemini Pro Experimental Free
+            model_id = "google/gemini-2.0-pro-exp-02-05:free"
+            st.caption("🌐 Model: Gemini 2.0 Pro (Free)")
 
         elif ai_provider == "Groq":
             api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
@@ -79,6 +81,7 @@ def get_driver():
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # Stealth args
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=chrome_options)
 
@@ -90,7 +93,9 @@ def scrape(url):
         driver.get(url)
         time.sleep(2)
         title = driver.title.split('|')[0].strip()
-        if "Captcha" in title or "Login" in title: title = ""
+        # Check block
+        if "login" in title.lower() or "security" in title.lower():
+            title = "Blocked"
         
         page_source = driver.page_source
         raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp))', page_source)
@@ -101,7 +106,7 @@ def scrape(url):
     except: pass
     return title, list(candidates)
 
-# --- AI PROCESS ---
+# --- AI ---
 def extract_json(text):
     if not text: return None
     text = re.sub(r'```json', '', text).replace('```', '')
@@ -132,22 +137,28 @@ def ai_process(provider, key, model, p_name):
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"}
     }
-
+    
+    # Provider Specifics
     url = ""
     if provider == "SambaNova":
         url = "https://api.sambanova.ai/v1/chat/completions"
+        # SambaNova doesn't support response_format json_object in all models, forcing via prompt is safer
+        del payload["response_format"] 
     elif provider == "OpenRouter":
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers["HTTP-Referer"] = "https://swisswelle.streamlit.app"
+        del payload["response_format"] # Safer for free models
     elif provider == "Groq":
         url = "https://api.groq.com/openai/v1/chat/completions"
 
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=30)
+        r = requests.post(url, json=payload, headers=headers, timeout=60)
         if r.status_code == 200:
-            data = r.json()
-            content = data['choices'][0]['message']['content']
-            return extract_json(content)
+            try:
+                content = r.json()['choices'][0]['message']['content']
+                return extract_json(content)
+            except:
+                return {"error": f"Parse Error: {r.text}"}
         else:
             return {"error": f"API Error {r.status_code}: {r.text}"}
     except Exception as e: return {"error": str(e)}
@@ -164,7 +175,7 @@ def upload_wp(item, wp_url, user, password, p_name):
             filename = item['data'].name
         else:
             r = requests.get(item['data'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
-            if r.status_code != 200: return None, "Download Fail"
+            if r.status_code != 200: return None, "DL Fail"
             img_data = r.content
 
         headers = {'Content-Disposition': f'attachment; filename={filename}', 'Content-Type': 'image/jpeg'}
@@ -174,7 +185,7 @@ def upload_wp(item, wp_url, user, password, p_name):
             pid = r.json()['id']
             requests.post(f"{api_url}/{pid}", json={"alt_text": p_name, "title": p_name}, auth=HTTPBasicAuth(user, password), verify=False)
             return pid, None
-        return None, r.text[:50]
+        return None, r.text[:100]
     except Exception as e: return None, str(e)
 
 def publish_product(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
@@ -196,7 +207,7 @@ if not st.session_state.generated:
         p_name = st.text_input("Product Name", st.session_state.p_name)
     
     st.subheader("2. Images")
-    tab1, tab2 = st.tabs(["📂 Upload (Backup)", "🔗 Scrape (Recommended)"])
+    tab1, tab2 = st.tabs(["📂 Upload (Best)", "🔗 Scrape (Try)"])
     
     with tab2:
         url_input = st.text_input("AliExpress URL")
@@ -204,12 +215,15 @@ if not st.session_state.generated:
             if url_input:
                 with st.spinner("Scraping..."):
                     t, imgs = scrape(url_input)
-                    if t: st.session_state.p_name = t
-                    if imgs:
-                        for u in imgs: st.session_state.final_images.append({'type': 'url', 'data': u})
-                        st.success(f"Found {len(imgs)} images")
-                        st.rerun()
-                    else: st.error("No images found (Blocked). Use Upload.")
+                    if "Blocked" in t:
+                        st.error("AliExpress blocked the scraper. Please use Upload tab.")
+                    else:
+                        if t: st.session_state.p_name = t
+                        if imgs:
+                            for u in imgs: st.session_state.final_images.append({'type': 'url', 'data': u})
+                            st.success(f"Found {len(imgs)} images")
+                            st.rerun()
+                        else: st.warning("No images found.")
 
     with tab1:
         upl = st.file_uploader("Drop images here", accept_multiple_files=True, type=['jpg','png','webp','jpeg'])
@@ -220,9 +234,9 @@ if not st.session_state.generated:
                 if f.name not in existing_names:
                     st.session_state.final_images.append({'type': 'file', 'data': f})
                     count += 1
-            if count > 0: st.success(f"Added {count} files")
+            if count > 0: st.success(f"Added {count} images")
 
-    # PREVIEW & DELETE
+    # PREVIEW
     if st.session_state.final_images:
         st.divider()
         st.write(f"**Total: {len(st.session_state.final_images)}**")
@@ -237,7 +251,8 @@ if not st.session_state.generated:
 
     st.divider()
     if st.button("🚀 Generate Content", type="primary"):
-        if not api_key or not p_name: st.error("Missing Data"); st.stop()
+        if not api_key: st.error("No API Key found in Secrets!"); st.stop()
+        if not p_name: st.error("No Product Name"); st.stop()
         st.session_state.p_name = p_name
         
         with st.status(f"Thinking with {ai_provider}..."):
@@ -250,10 +265,9 @@ if not st.session_state.generated:
                 st.rerun()
 
 else:
-    # --- PUBLISH SCREEN ---
     c1, c2 = st.columns([1, 1])
     with c1:
-        st.subheader("🖼️ Select Images for Website")
+        st.subheader("🖼️ Select Images")
         img_list = st.session_state.final_images
         
         if 'selections' not in st.session_state:
@@ -271,22 +285,20 @@ else:
         
         st.divider()
         if len(selected_images) > 0:
-            feat_idx = st.selectbox("⭐ Choose Featured Image:", range(len(selected_images)), format_func=lambda x: f"Image #{selected_indices[x]+1}")
+            feat_idx = st.selectbox("⭐ Featured Image:", range(len(selected_images)), format_func=lambda x: f"Image #{selected_indices[x]+1}")
             st.image(selected_images[feat_idx]['data'] if selected_images[feat_idx]['type'] == 'file' else selected_images[feat_idx]['data'], width=150)
 
-            if st.button("📤 Upload & Publish", type="primary"):
+            if st.button("📤 Publish", type="primary"):
                 feat_img_obj = selected_images[feat_idx]
                 gallery_objs = [img for i, img in enumerate(selected_images) if i != feat_idx]
                 
                 status = st.empty()
                 prog = st.progress(0)
                 
-                # Upload Featured
-                status.text("Uploading Featured Image...")
+                status.text("Uploading Featured...")
                 feat_id, err = upload_wp(feat_img_obj, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
-                if not feat_id: st.error(f"Featured Upload Failed: {err}"); st.stop()
+                if not feat_id: st.error(f"Featured Failed: {err}"); st.stop()
                 
-                # Upload Gallery
                 gallery_ids = []
                 total = len(gallery_objs)
                 for idx, img in enumerate(gallery_objs):
