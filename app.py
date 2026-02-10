@@ -10,15 +10,17 @@ from selenium.webdriver.chrome.options import Options
 from PIL import Image
 import io
 
-st.set_page_config(page_title="SwissWelle V69", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="SwissWelle V70", page_icon="🔒", layout="wide")
 
-# --- CONFIG & SECRETS ---
-def get_secret(key): return st.secrets.get(key, "")
+# --- SECURE CONFIG ---
+def get_secret(key):
+    # Try to get from secrets, return empty string if not found
+    return st.secrets.get(key, "")
 
-# User Provided Keys (Set as Defaults)
-DEFAULT_SAMBANOVA_KEY = "f4364261-3ff6-4bfc-9a0f-b887329fa15d"
-DEFAULT_OPENROUTER_KEY = "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"
-DEFAULT_GROQ_KEY = get_secret("groq_api_key")
+# Load Keys from Secrets
+default_sambanova_key = get_secret("sambanova_api_key")
+default_openrouter_key = get_secret("openrouter_api_key")
+default_groq_key = get_secret("groq_api_key")
 
 default_wp_url = get_secret("wp_url")
 default_wc_ck = get_secret("wc_ck")
@@ -36,12 +38,11 @@ if 'html_content' not in st.session_state: st.session_state.html_content = ""
 if 'meta_desc' not in st.session_state: st.session_state.meta_desc = ""
 if 'final_images' not in st.session_state: st.session_state.final_images = []
 if 'p_name' not in st.session_state: st.session_state.p_name = ""
-if 'selected_indices' not in st.session_state: st.session_state.selected_indices = []
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V69")
-    st.caption("Perfect Scraper + Multi AI")
+    st.title("🌿 SwissWelle V70")
+    st.caption("Secure Secrets Manager")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Settings", expanded=True):
@@ -51,17 +52,17 @@ with st.sidebar:
         model_id = ""
 
         if ai_provider == "SambaNova":
-            api_key = st.text_input("SambaNova Key", value=DEFAULT_SAMBANOVA_KEY, type="password")
+            api_key = st.text_input("SambaNova Key", value=default_sambanova_key, type="password")
             model_id = "Meta-Llama-3.1-70B-Instruct"
-            st.caption("⚡ Ultra Fast Llama 3.1 70B")
+            st.caption("⚡ Llama 3.1 70B (Fast)")
 
         elif ai_provider == "OpenRouter":
-            api_key = st.text_input("OpenRouter Key", value=DEFAULT_OPENROUTER_KEY, type="password")
-            model_id = "google/gemini-2.0-flash-exp:free" # Using Free Gemini via OpenRouter
-            st.caption("🌐 Access to Gemini/Deepseek Free")
+            api_key = st.text_input("OpenRouter Key", value=default_openrouter_key, type="password")
+            model_id = "google/gemini-2.0-flash-exp:free"
+            st.caption("🌐 Gemini/Deepseek Free")
 
         elif ai_provider == "Groq":
-            api_key = st.text_input("Groq Key", value=DEFAULT_GROQ_KEY, type="password")
+            api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
             model_id = "llama-3.3-70b-versatile"
 
     with st.expander("Website Config", expanded=False):
@@ -71,7 +72,7 @@ with st.sidebar:
         wp_user = st.text_input("User", value=default_wp_user)
         wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
 
-# --- SCRAPER (TOUCH NOT!) ---
+# --- SCRAPER ---
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
@@ -92,7 +93,6 @@ def scrape(url):
         if "Captcha" in title or "Login" in title: title = ""
         
         page_source = driver.page_source
-        # V68 Logic Preserved
         raw_matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp))', page_source)
         for m in raw_matches:
             m = m.split('?')[0]
@@ -101,8 +101,7 @@ def scrape(url):
     except: pass
     return title, list(candidates)
 
-# --- AI FUNCTIONS ---
-
+# --- AI PROCESS ---
 def extract_json(text):
     if not text: return None
     text = re.sub(r'```json', '', text).replace('```', '')
@@ -151,11 +150,9 @@ def ai_process(provider, key, model, p_name):
             return extract_json(content)
         else:
             return {"error": f"API Error {r.status_code}: {r.text}"}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 # --- UPLOAD & PUBLISH ---
-
 def upload_wp(item, wp_url, user, password, p_name):
     try:
         api_url = f"{wp_url}/wp-json/wp/v2/media"
@@ -192,7 +189,6 @@ def publish_product(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
     except Exception as e: return str(e)
 
 # --- UI ---
-
 if not st.session_state.generated:
     st.subheader("1. Product Info")
     col1, col2 = st.columns([3, 1])
@@ -206,15 +202,14 @@ if not st.session_state.generated:
         url_input = st.text_input("AliExpress URL")
         if st.button("🔍 Scrape URL", type="primary"):
             if url_input:
-                with st.spinner("Scraping (Don't touch)..."):
+                with st.spinner("Scraping..."):
                     t, imgs = scrape(url_input)
                     if t: st.session_state.p_name = t
                     if imgs:
                         for u in imgs: st.session_state.final_images.append({'type': 'url', 'data': u})
                         st.success(f"Found {len(imgs)} images")
                         st.rerun()
-                    else:
-                        st.error("No images found (Blocked). Use Upload.")
+                    else: st.error("No images found (Blocked). Use Upload.")
 
     with tab1:
         upl = st.file_uploader("Drop images here", accept_multiple_files=True, type=['jpg','png','webp','jpeg'])
@@ -257,46 +252,27 @@ if not st.session_state.generated:
 else:
     # --- PUBLISH SCREEN ---
     c1, c2 = st.columns([1, 1])
-    
     with c1:
         st.subheader("🖼️ Select Images for Website")
-        st.caption("Uncheck images you don't want to publish.")
-        
-        # 1. SELECTION UI
         img_list = st.session_state.final_images
         
-        # Initialize selection map if not exists
         if 'selections' not in st.session_state:
             st.session_state.selections = {i: True for i in range(len(img_list))}
 
-        # Show Grid with Checkboxes
         cols = st.columns(4)
         for i, item in enumerate(img_list):
             with cols[i % 4]:
                 if item['type'] == 'file': st.image(item['data'], use_container_width=True)
                 else: st.image(item['data'], use_container_width=True)
-                
-                # Checkbox for selection
                 st.session_state.selections[i] = st.checkbox(f"Keep #{i+1}", value=st.session_state.selections[i], key=f"sel_{i}")
 
-        # Filter Selected Images
         selected_indices = [i for i, sel in st.session_state.selections.items() if sel]
         selected_images = [img_list[i] for i in selected_indices]
         
         st.divider()
-        st.write(f"**Selected for Publish:** {len(selected_images)}")
-        
         if len(selected_images) > 0:
-            # 2. FEATURED IMAGE SELECTOR (Only from Selected)
-            # Map dropdown index to the original selected_image list
-            feat_idx = st.selectbox(
-                "⭐ Choose Featured Image (from selected):", 
-                range(len(selected_images)), 
-                format_func=lambda x: f"Image #{selected_indices[x]+1}"
-            )
-            
-            # Show Preview of Featured
-            st.image(selected_images[feat_idx]['data'] if selected_images[feat_idx]['type'] == 'file' else selected_images[feat_idx]['data'], width=150, caption="Selected Featured")
+            feat_idx = st.selectbox("⭐ Choose Featured Image:", range(len(selected_images)), format_func=lambda x: f"Image #{selected_indices[x]+1}")
+            st.image(selected_images[feat_idx]['data'] if selected_images[feat_idx]['type'] == 'file' else selected_images[feat_idx]['data'], width=150)
 
             if st.button("📤 Upload & Publish", type="primary"):
                 feat_img_obj = selected_images[feat_idx]
@@ -308,10 +284,7 @@ else:
                 # Upload Featured
                 status.text("Uploading Featured Image...")
                 feat_id, err = upload_wp(feat_img_obj, wp_url, wp_user, wp_app_pass, st.session_state.p_name)
-                
-                if not feat_id:
-                    st.error(f"Featured Upload Failed: {err}")
-                    st.stop()
+                if not feat_id: st.error(f"Featured Upload Failed: {err}"); st.stop()
                 
                 # Upload Gallery
                 gallery_ids = []
@@ -322,14 +295,8 @@ else:
                     if pid: gallery_ids.append(pid)
                     if total > 0: prog.progress((idx+1)/total)
                 
-                # Publish
                 status.text("Publishing...")
-                res = publish_product(
-                    st.session_state.p_name,
-                    st.session_state.html_content,
-                    st.session_state.meta_desc,
-                    feat_id, gallery_ids, wp_url, wc_ck, wc_cs
-                )
+                res = publish_product(st.session_state.p_name, st.session_state.html_content, st.session_state.meta_desc, feat_id, gallery_ids, wp_url, wc_ck, wc_cs)
                 
                 if isinstance(res, str): st.error(res)
                 elif res.status_code == 201:
@@ -338,8 +305,7 @@ else:
                     st.markdown(f"[👉 **Click to Edit**]({res.json().get('permalink')})")
                     if st.button("New Post"): reset_app()
                 else: st.error(res.text)
-        else:
-            st.warning("Please select at least one image.")
+        else: st.warning("Select images first.")
 
     with c2:
         st.subheader("📝 Content")
