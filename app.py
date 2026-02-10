@@ -10,14 +10,13 @@ from selenium.webdriver.chrome.options import Options
 from PIL import Image
 import io
 
-st.set_page_config(page_title="SwissWelle V72", page_icon="🔐", layout="wide")
+st.set_page_config(page_title="SwissWelle V73", page_icon="🛠️", layout="wide")
 
 # --- SECRETS MANAGER ---
 def get_secret(key):
-    # This reads from the Streamlit Cloud "Secrets" panel you set up
     return st.secrets.get(key, "")
 
-# Load Keys directly from Secrets
+# Load Keys
 default_sambanova_key = get_secret("sambanova_api_key")
 default_openrouter_key = get_secret("openrouter_api_key")
 default_groq_key = get_secret("groq_api_key")
@@ -41,8 +40,8 @@ if 'p_name' not in st.session_state: st.session_state.p_name = ""
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle V72")
-    st.caption("Updated Models (Feb 2026)")
+    st.title("🌿 SwissWelle V73")
+    st.caption("Editable Model IDs")
     if st.button("🔄 Start New Post", type="primary"): reset_app()
     
     with st.expander("🧠 AI Settings", expanded=True):
@@ -53,19 +52,19 @@ with st.sidebar:
 
         if ai_provider == "SambaNova":
             api_key = st.text_input("SambaNova Key", value=default_sambanova_key, type="password")
-            # UPDATED: Using the flagship 405B model which is currently active
-            model_id = "Meta-Llama-3.1-405B-Instruct" 
-            st.caption("⚡ Model: Llama 3.1 405B")
+            # Changed to 8B (Most likely to be free/available)
+            model_id = st.text_input("Model ID", value="Meta-Llama-3.1-8B-Instruct") 
+            st.caption("Try: Meta-Llama-3.1-8B-Instruct")
 
         elif ai_provider == "OpenRouter":
             api_key = st.text_input("OpenRouter Key", value=default_openrouter_key, type="password")
-            # UPDATED: Using the latest Gemini Pro Experimental Free
-            model_id = "google/gemini-2.0-pro-exp-02-05:free"
-            st.caption("🌐 Model: Gemini 2.0 Pro (Free)")
+            # Changed to Flash Lite (Free)
+            model_id = st.text_input("Model ID", value="google/gemini-2.0-flash-lite-preview-02-05:free")
+            st.caption("Try: google/gemini-2.0-flash-exp:free")
 
         elif ai_provider == "Groq":
             api_key = st.text_input("Groq Key", value=default_groq_key, type="password")
-            model_id = "llama-3.3-70b-versatile"
+            model_id = st.text_input("Model ID", value="llama-3.3-70b-versatile")
 
     with st.expander("Website Config", expanded=False):
         wp_url = st.text_input("WP URL", value=default_wp_url)
@@ -81,7 +80,6 @@ def get_driver():
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # Stealth args
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=chrome_options)
 
@@ -93,7 +91,6 @@ def scrape(url):
         driver.get(url)
         time.sleep(2)
         title = driver.title.split('|')[0].strip()
-        # Check block
         if "login" in title.lower() or "security" in title.lower():
             title = "Blocked"
         
@@ -134,22 +131,20 @@ def ai_process(provider, key, model, p_name):
     
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"}
+        "messages": [{"role": "user", "content": prompt}]
     }
     
     # Provider Specifics
     url = ""
     if provider == "SambaNova":
         url = "https://api.sambanova.ai/v1/chat/completions"
-        # SambaNova doesn't support response_format json_object in all models, forcing via prompt is safer
-        del payload["response_format"] 
+        # SambaNova strictness
     elif provider == "OpenRouter":
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers["HTTP-Referer"] = "https://swisswelle.streamlit.app"
-        del payload["response_format"] # Safer for free models
     elif provider == "Groq":
         url = "https://api.groq.com/openai/v1/chat/completions"
+        payload["response_format"] = {"type": "json_object"}
 
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=60)
