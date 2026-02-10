@@ -1,296 +1,359 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from bs4 import BeautifulSoup
 import google.generativeai as genai
-from PIL import Image
-from io import BytesIO
+from groq import Groq
 import json
-import os
 import re
 import time 
 import requests
+from requests.auth import HTTPBasicAuth
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from woocommerce import API
-from requests.auth import HTTPBasicAuth
-from duckduckgo_search import DDGS
+from PIL import Image
+import io
 
-st.set_page_config(page_title="SwissWelle V40", page_icon="🩺", layout="wide")
+# --- PAGE CONFIG ---
+st.set_page_config(
+    page_title="SwissWelle V-Final",
+    page_icon="🌿",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- 1. SECURITY ---
-def check_password():
-    if "password_correct" not in st.session_state: st.session_state.password_correct = False
-    def password_entered():
-        if st.session_state["password"] == st.secrets["app_login_password"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else: st.session_state["password_correct"] = False
-    if not st.session_state["password_correct"]:
-        st.text_input("Enter Admin Password", type="password", on_change=password_entered, key="password")
-        return False
-    return True
+# --- CUSTOM CSS FOR MODERN UI ---
+st.markdown("""
+<style>
+    .stApp { background-color: #0e1117; color: #ffffff; }
+    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; }
+    .stTextInput>div>div>input { border-radius: 8px; }
+    div[data-testid="stImage"] { border-radius: 10px; overflow: hidden; border: 1px solid #333; }
+    .img-label { text-align: center; font-weight: bold; margin-top: 5px; color: #00ff00; }
+</style>
+""", unsafe_allow_html=True)
 
-if not check_password(): st.stop()
+# --- SECRETS ---
+def get_secret(key): return st.secrets.get(key, "")
 
-def get_secret(key): return st.secrets[key] if key in st.secrets else ""
+# --- SESSION STATE INIT ---
+if 'final_images' not in st.session_state: st.session_state.final_images = []
+if 'p_name' not in st.session_state: st.session_state.p_name = ""
+if 'html_content' not in st.session_state: st.session_state.html_content = ""
+if 'meta_desc' not in st.session_state: st.session_state.meta_desc = ""
+if 'generated' not in st.session_state: st.session_state.generated = False
 
-default_api_key = get_secret("gemini_api_key")
-default_wp_url = get_secret("wp_url")
-default_wc_ck = get_secret("wc_ck")
-default_wc_cs = get_secret("wc_cs")
-default_wp_user = get_secret("wp_user")
-default_wp_app_pass = get_secret("wp_app_pass")
+# --- FUNCTIONS ---
 
-def reset_app():
-    for key in list(st.session_state.keys()):
-        if key != 'password_correct': del st.session_state[key]
-    st.rerun()
-
-for k in ['generated', 'html_content', 'meta_desc', 'image_map', 'p_name']:
-    if k not in st.session_state: st.session_state[k] = None if k == 'p_name' else ""
-if 'image_map' not in st.session_state or not isinstance(st.session_state.image_map, dict):
-    st.session_state.image_map = {}
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.title("🩺 SwissWelle V40")
-    st.caption("Diagnostic Mode (Error Fix)")
-    if st.button("🔄 Start New Post", type="primary"): reset_app()
-    
-    with st.expander("Settings", expanded=True):
-        api_key = st.text_input("Gemini API", value=default_api_key, type="password")
-        valid_model = None
-        if api_key:
-            try:
-                genai.configure(api_key=api_key)
-                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'models/gemini-1.0-pro', 'models/gemini-pro']
-                valid_model = next((m for p in preferred for m in models if p in m), models[0] if models else None)
-                if valid_model: st.success(f"✅ AI Ready: {valid_model.split('/')[-1]}")
-            except: st.error("❌ Invalid API Key")
-
-        wp_url = st.text_input("WP URL", value=default_wp_url)
-        wc_ck = st.text_input("CK", value=default_wc_ck, type="password")
-        wc_cs = st.text_input("CS", value=default_wc_cs, type="password")
-        wp_user = st.text_input("User", value=default_wp_user)
-        wp_app_pass = st.text_input("Pass", value=default_wp_app_pass, type="password")
-
-# --- SCRAPER ---
+# 1. Scraper (Selenium based for AliExpress)
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=chrome_options)
 
-def clean_url(url):
-    url = url.split('?')[0]
-    if 'alicdn' in url:
-        url = re.sub(r'_\d+x\d+\.(jpg|png|webp).*', '', url)
-        url = re.sub(r'_\.(jpg|png|webp)$', '', url)
-        if not url.endswith(('.jpg', '.png', '.webp')): url += '.jpg'
-    return url
-
-def get_images_from_search(query):
+def scrape_images(url):
+    driver = get_driver()
+    candidates = set()
+    title = ""
     try:
-        with DDGS() as ddgs:
-            return [r['image'] for r in list(ddgs.images(query, max_results=15))]
-    except: return []
-
-def scrape(url, product_name_fallback):
-    try:
-        driver = get_driver()
         driver.get(url)
-        time.sleep(5) 
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
+        time.sleep(2.5)
+        title = driver.title.split('|')[0].strip()
+        if "login" in title.lower() or "security" in title.lower(): title = ""
         
         page_source = driver.page_source
-        soup = BeautifulSoup(page_source, 'html.parser')
-        candidates = set()
-        
-        if 'aliexpress' in url:
-            try:
-                json_matches = re.findall(r'"imagePathList":\s*\[(.*?)\]', page_source)
-                for match in json_matches:
-                    urls = re.findall(r'"(https?://[^"]+)"', match)
-                    for u in urls: candidates.add(clean_url(u))
-            except: pass
+        # Regex for AliExpress & General
+        matches = re.findall(r'(https?://[^"\s\'>]+?\.alicdn\.com/[^"\s\'>]+?\.(?:jpg|jpeg|png|webp))', page_source)
+        for m in matches:
+            m = m.split('?')[0] # Clean params
+            if '32x32' not in m and '50x50' not in m and 'search' not in m:
+                candidates.add(m)
+    except: pass
+    return title, list(candidates)
 
-        page_text = soup.get_text().lower()
-        if "captcha" in page_text or "login" in page_text:
-            st.toast("⚠️ Blocked. Switching to Web Search...", icon="🔄")
-            return "", get_images_from_search(product_name_fallback + " boho jewelry")
-
-        matches = re.findall(r'(https?://[^"\'\s<>]+?alicdn\.com[^"\'\s<>]+?\.(?:jpg|jpeg|png|webp))', str(soup))
-        for m in matches: candidates.add(clean_url(m))
-        
-        for img in soup.find_all(['img', 'a']):
-            for k, v in img.attrs.items():
-                if isinstance(v, str) and 'http' in v:
-                    if any(ext in v.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']): 
-                        candidates.add(clean_url(v))
-        
-        final = []
-        junk = ['icon', 'logo', 'avatar', 'gif', 'svg', 'blank', 'loading', 'grey', 'spinner', 'captcha', 'login', 'search']
-        for c in candidates:
-            if any(x in c.lower() for x in junk): continue
-            if c.startswith('http'): final.append(c)
-            
-        if len(final) < 3:
-            st.toast("⚠️ Few images. Searching Web...", icon="🌍")
-            web_imgs = get_images_from_search(product_name_fallback + " product")
-            final.extend(web_imgs)
-            
-        return soup.get_text(separator=' ', strip=True)[:30000], list(set(final))
-    except Exception as e:
-        return "", get_images_from_search(product_name_fallback)
-
-def ai_process(key, model_name, p_name, text, imgs):
-    try:
-        genai.configure(api_key=key)
-        model = genai.GenerativeModel(model_name)
-        instruction = """Role: Senior German Copywriter for 'swisswelle.ch'. Tone: Boho-Chic. TASKS: 1. Write HTML description (h2, h3, ul, p). 2. Write RankMath SEO Meta Description. 3. Select 15-20 BEST images. Rename with German keywords."""
-        data_context = f"Product: {p_name}\nImages found: {len(imgs)}\nList: {imgs[:400]}\nContext: {text[:50000]}"
-        output_format = """JSON OUTPUT: { "html_content": "...", "meta_description": "...", "image_map": { "original_url": "german-name" } }"""
-        res = model.generate_content(f"{instruction}\n{data_context}\n{output_format}", generation_config={"response_mime_type": "application/json"})
-        return json.loads(res.text)
-    except Exception as e: return {"error": str(e)}
-
-# --- DIAGNOSTIC UPLOAD & PUBLISH ---
-def upload_image(url, wp_url, user, password, alt):
-    try:
-        img_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).content
-        filename = f"{alt.replace(' ', '-').lower()}.webp"
-        api_url = f"{wp_url}/wp-json/wp/v2/media"
-        headers = {'Content-Disposition': f'attachment; filename={filename}', 'Content-Type': 'image/webp'}
-        
-        r = requests.post(api_url, data=img_data, headers=headers, auth=HTTPBasicAuth(user, password), verify=False)
-        
-        if r.status_code == 201:
-            pid = r.json()['id']
-            requests.post(f"{api_url}/{pid}", json={"alt_text": alt, "title": alt}, auth=HTTPBasicAuth(user, password), verify=False)
-            return pid, None
-        else:
-            return None, f"Upload Failed ({r.status_code}): {r.text[:100]}"
-    except Exception as e:
-        return None, f"Upload Error: {str(e)}"
-
-def publish(title, desc, meta, feat_id, gallery_ids, wp_url, ck, cs):
-    try:
-        wcapi = API(url=wp_url, consumer_key=ck, consumer_secret=cs, version="wc/v3", timeout=60, verify_ssl=False)
-        
-        # Filter valid IDs
-        valid_gallery = [{"id": i} for i in gallery_ids if i is not None]
-        images_payload = []
-        if feat_id: images_payload.append({"id": feat_id})
-        images_payload.extend([img for img in valid_gallery if img['id'] != feat_id])
-        
-        data = {
-            "name": title, "description": desc, "status": "draft", "images": images_payload,
-            "type": "simple", "regular_price": "0.00",
-            "meta_data": [{"key": "rank_math_description", "value": meta}, {"key": "rank_math_focus_keyword", "value": title}]
-        }
-        return wcapi.post("products", data)
-    except Exception as e:
-        return f"Publish Connection Error: {str(e)}"
-
-# --- UI ---
-if not st.session_state.generated:
-    st.session_state.p_name = st.text_input("Product Name", "Boho Ring")
-    urls_input = st.text_area("AliExpress/Amazon URLs", height=100)
+# 2. AI Content Generator (German + Boho + SEO)
+def generate_content(provider, api_key, p_name):
+    # German & Boho Context Prompt
+    prompt = f"""
+    You are a Senior German Copywriter for 'SwissWelle.ch', a brand focusing on Boho-Chic lifestyle products.
     
-    if st.button("🚀 Generate (Deep Scan)", type="primary"):
-        if not api_key: st.error("No API Key"); st.stop()
-        if not valid_model: st.error("No valid AI model found!"); st.stop()
+    PRODUCT: {p_name}
+    
+    TASKS:
+    1. Write a Product Title (German, SEO optimized).
+    2. Write a RankMath SEO Meta Description (German, compelling, max 160 chars).
+    3. Write a full HTML Product Description (German). 
+       - Use <h2> for main headings.
+       - Use <ul> for features.
+       - Tone: Emotional, Artistic, Boho, High-quality.
+       - Do NOT use <html>, <head>, or <body> tags. Just the inner content.
+    
+    OUTPUT FORMAT (Strict JSON):
+    {{
+        "seo_title": "...",
+        "meta_description": "...",
+        "html_content": "..."
+    }}
+    """
+    
+    try:
+        if provider == "Groq":
+            client = Groq(api_key=api_key)
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
+            return json.loads(completion.choices[0].message.content)
+            
+        elif provider == "Gemini":
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash") # Using 1.5-flash as it's stable
+            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            return json.loads(response.text)
+            
+    except Exception as e:
+        return {"error": str(e)}
+
+# 3. WordPress Uploader
+def upload_to_wp(item, p_name, wp_url, user, password):
+    try:
+        api_url = f"{wp_url}/wp-json/wp/v2/media"
+        # Create SEO Friendly German Filename
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '-', p_name).lower()
+        filename = f"{clean_name}-{int(time.time())}.jpg"
         
-        with st.status("Hunting Images...", expanded=True) as s:
-            full_text = ""
-            all_imgs = []
-            urls = [u.strip() for u in urls_input.split('\n') if u.strip()]
+        # Get Image Data
+        if item['type'] == 'file':
+            img_byte_arr = io.BytesIO()
+            image = Image.open(item['data'])
+            image = image.convert('RGB') # Convert all to JPG
+            image.save(img_byte_arr, format='JPEG', quality=85)
+            img_data = img_byte_arr.getvalue()
+        else:
+            r = requests.get(item['data'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+            if r.status_code != 200: return None
+            img_data = r.content
+
+        # Upload
+        headers = {
+            'Content-Disposition': f'attachment; filename={filename}',
+            'Content-Type': 'image/jpeg'
+        }
+        res = requests.post(api_url, data=img_data, headers=headers, auth=HTTPBasicAuth(user, password))
+        
+        if res.status_code == 201:
+            pid = res.json()['id']
+            # SEO: Update Alt Text & Title (German)
+            update_data = {
+                "alt_text": p_name,
+                "title": p_name,
+                "caption": p_name,
+                "description": p_name
+            }
+            requests.post(f"{api_url}/{pid}", json=update_data, auth=HTTPBasicAuth(user, password))
+            return pid
+            
+    except: return None
+    return None
+
+def publish_product(p_data, image_ids, feat_id, wp_url, ck, cs):
+    # Construct Image Payload (Featured first)
+    # Filter gallery images (exclude featured ID from gallery list to avoid dupes if logic fails, though list comp handles it)
+    final_images = [{"id": feat_id}] + [{"id": i} for i in image_ids if i != feat_id]
+    
+    payload = {
+        "name": p_data['seo_title'],
+        "description": p_data['html_content'],
+        "status": "draft",
+        "type": "simple",
+        "images": final_images,
+        "meta_data": [
+            {"key": "rank_math_title", "value": p_data['seo_title']},
+            {"key": "rank_math_description", "value": p_data['meta_description']},
+            {"key": "rank_math_focus_keyword", "value": p_data['seo_title']}
+        ]
+    }
+    
+    try:
+        res = requests.post(
+            f"{wp_url}/wp-json/wc/v3/products",
+            auth=HTTPBasicAuth(ck, cs),
+            json=payload
+        )
+        return res
+    except Exception as e: return str(e)
+
+
+# --- SIDEBAR UI ---
+with st.sidebar:
+    st.title("🌿 SwissWelle Admin")
+    st.caption("Boho & German SEO Suite")
+    
+    if st.button("🔄 Reset / New Post", type="primary"):
+        st.session_state.clear()
+        st.rerun()
+    
+    with st.expander("⚙️ AI Settings", expanded=True):
+        provider = st.radio("Select Brain:", ["Groq", "Gemini"])
+        if provider == "Groq":
+            api_key = st.text_input("Groq API Key", value=get_secret("groq_api_key"), type="password")
+        else:
+            api_key = st.text_input("Gemini API Key", value=get_secret("gemini_api_key"), type="password")
+
+    with st.expander("🔌 Website Config", expanded=False):
+        wp_url = st.text_input("WP URL", value=get_secret("wp_url"))
+        wp_user = st.text_input("User", value=get_secret("wp_user"))
+        wp_pass = st.text_input("Pass", value=get_secret("wp_app_pass"), type="password")
+
+# --- MAIN UI ---
+
+# SECTION 1: INPUTS
+st.subheader("1. Product Data Source")
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    # 1.A URL Scrape
+    url_input = st.text_input("🔗 Scrape from URL (AliExpress)")
+    if st.button("🔍 Scrape Images"):
+        if url_input:
+            with st.spinner("Scraping..."):
+                t, imgs = scrape_images(url_input)
+                if t: st.session_state.p_name = t
+                if imgs:
+                    for i in imgs: st.session_state.final_images.append({'type': 'url', 'data': i})
+                    st.success(f"Found {len(imgs)} images!")
+                else: st.error("No images found. Try upload.")
+
+with col2:
+    # 1.B Bulk Upload
+    upl_files = st.file_uploader("📂 Bulk Upload Images", accept_multiple_files=True)
+    if upl_files:
+        existing = [x['data'].name for x in st.session_state.final_images if x['type'] == 'file']
+        count = 0
+        for f in upl_files:
+            if f.name not in existing:
+                st.session_state.final_images.append({'type': 'file', 'data': f})
+                count += 1
+        if count > 0: st.success(f"Added {count} files")
+
+# 1.C Bulk URL Input
+with st.expander("🔗 Paste Bulk Image URLs (Optional)"):
+    bulk_urls = st.text_area("One URL per line")
+    if st.button("Add URLs"):
+        if bulk_urls:
+            urls = [u.strip() for u in bulk_urls.split('\n') if u.strip()]
             for u in urls:
-                s.write(f"🔍 Deep Scanning: {u}")
-                t, i = scrape(u, st.session_state.p_name)
-                full_text += t
-                all_imgs.extend(i)
+                st.session_state.final_images.append({'type': 'url', 'data': u})
+            st.success(f"Added {len(urls)} links")
+
+# SECTION 2: IMAGE MANAGEMENT (GRID + NUMBERS)
+st.divider()
+st.subheader("2. Image Manager")
+p_name_input = st.text_input("Product Name (Required)", value=st.session_state.p_name)
+st.session_state.p_name = p_name_input
+
+if st.session_state.final_images:
+    st.info(f"Total Images: {len(st.session_state.final_images)}")
+    
+    # Custom Grid for Image Management
+    cols = st.columns(6)
+    for i, item in enumerate(st.session_state.final_images):
+        with cols[i % 6]:
+            # Display Image
+            if item['type'] == 'file': 
+                st.image(item['data'], use_container_width=True)
+            else: 
+                st.image(item['data'], use_container_width=True)
             
-            unique_imgs = list(set(all_imgs))
-            s.write(f"📸 Total images found: {len(unique_imgs)}")
-            s.write(f"🧠 AI Writing Content...")
-            res = ai_process(api_key, valid_model, st.session_state.p_name, full_text, unique_imgs)
+            # Number Label
+            st.markdown(f"<div class='img-label'>#{i+1}</div>", unsafe_allow_html=True)
             
-            if "error" in res: st.error(res['error'])
-            else:
-                st.session_state.html_content = res['html_content']
-                st.session_state.meta_desc = res.get('meta_description', '')
-                st.session_state.image_map = res.get('image_map', {})
-                st.session_state.generated = True
+            # Delete Button
+            if st.button(f"🗑️ Remove", key=f"del_{i}"):
+                st.session_state.final_images.pop(i)
                 st.rerun()
 
-else:
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.subheader("Select Images")
-        img_urls = list(st.session_state.image_map.keys())
-        if 'selections' not in st.session_state: st.session_state.selections = {u: True for u in img_urls}
-        
-        cols = st.columns(3)
-        for i, u in enumerate(img_urls):
-            with cols[i%3]:
-                st.image(u)
-                st.session_state.selections[u] = st.checkbox("Keep", value=st.session_state.selections.get(u, True), key=f"c{i}")
-        
-        final_imgs = [u for u, s in st.session_state.selections.items() if s]
-        st.markdown("---")
-        feat_img = st.selectbox("Featured Image", final_imgs) if final_imgs else None
-        
-        if st.button("📤 Publish Draft"):
-            with st.spinner("Processing..."):
-                error_log = []
+    st.divider()
+    
+    # SECTION 3: GENERATE & PUBLISH
+    col_gen, col_pub = st.columns([1, 1])
+    
+    with col_gen:
+        st.subheader("3. Generate Content (German/Boho)")
+        if st.button("🚀 Generate AI Content", type="primary"):
+            if not api_key or not st.session_state.p_name:
+                st.error("Missing API Key or Product Name")
+            else:
+                with st.status("Thinking..."):
+                    res = generate_content(provider, api_key, st.session_state.p_name)
+                    if "error" in res:
+                        st.error(res['error'])
+                    else:
+                        st.session_state.html_content = res.get('html_content', '')
+                        st.session_state.meta_desc = res.get('meta_description', '')
+                        st.session_state.seo_title = res.get('seo_title', st.session_state.p_name)
+                        st.session_state.generated = True
+                        st.rerun()
+
+    with col_pub:
+        st.subheader("4. Publish")
+        if st.session_state.generated:
+            # Featured Image Selector by Number
+            total_imgs = len(st.session_state.final_images)
+            feat_num = st.number_input("⭐ Enter Featured Image Number:", min_value=1, max_value=total_imgs, value=1)
+            
+            if st.button("📤 Upload & Publish to Site"):
+                feat_idx = feat_num - 1
+                feat_item = st.session_state.final_images[feat_idx]
+                gallery_items = [x for i, x in enumerate(st.session_state.final_images) if i != feat_idx]
+                
+                status_box = st.status("Processing Uploads...")
                 
                 # Upload Featured
-                st.write("Uploading Featured Image...")
-                alt = st.session_state.image_map.get(feat_img, st.session_state.p_name)
-                feat_id, err = upload_image(feat_img, wp_url, wp_user, wp_app_pass, alt)
-                if err: error_log.append(f"Featured: {err}")
+                status_box.write("Uploading Featured Image...")
+                feat_id = upload_to_wp(feat_item, st.session_state.seo_title, get_secret("wp_url"), get_secret("wp_user"), get_secret("wp_app_pass"))
                 
-                # Upload Gallery
-                gallery_ids = []
-                bar = st.progress(0)
-                for i, u in enumerate(final_imgs):
-                    if u != feat_img:
-                        alt = st.session_state.image_map.get(u, st.session_state.p_name)
-                        pid, err = upload_image(u, wp_url, wp_user, wp_app_pass, alt)
-                        if pid: gallery_ids.append(pid)
-                        elif err: error_log.append(f"Img {i}: {err}")
-                    bar.progress((i+1)/len(final_imgs))
-                
-                if error_log:
-                    with st.expander("⚠️ Some images failed (Click to see)", expanded=False):
-                        st.write(error_log)
-                
-                if feat_id:
-                    res = publish(st.session_state.p_name, st.session_state.html_content, st.session_state.meta_desc, feat_id, gallery_ids, wp_url, wc_ck, wc_cs)
-                    
-                    if isinstance(res, str): # Connection Error
-                        st.error(res)
-                    elif res.status_code == 201:
-                        st.success("✅ Published Successfully!")
-                        st.markdown(f"[👉 **Edit in WordPress**]({res.json().get('permalink')})")
-                        st.balloons()
-                        if st.button("🔄 Start New Post"): reset_app()
-                    else:
-                        st.error(f"Publish Failed (Code {res.status_code}): {res.text}")
+                if not feat_id:
+                    status_box.update(label="Failed!", state="error")
+                    st.error("Featured Image Upload Failed")
                 else:
-                    st.error("❌ Cannot publish: Featured image failed to upload. Check App Password/Username.")
+                    # Upload Gallery
+                    gallery_ids = []
+                    for idx, img in enumerate(gallery_items):
+                        status_box.write(f"Uploading Gallery {idx+1}/{len(gallery_items)}...")
+                        pid = upload_to_wp(img, st.session_state.seo_title, get_secret("wp_url"), get_secret("wp_user"), get_secret("wp_app_pass"))
+                        if pid: gallery_ids.append(pid)
+                    
+                    # Publish Product
+                    status_box.write("Creating Draft...")
+                    p_data = {
+                        "seo_title": st.session_state.seo_title,
+                        "html_content": st.session_state.html_content,
+                        "meta_description": st.session_state.meta_desc
+                    }
+                    
+                    res = publish_product(p_data, gallery_ids, feat_id, get_secret("wp_url"), get_secret("wc_ck"), get_secret("wc_cs"))
+                    
+                    if hasattr(res, 'status_code') and res.status_code == 201:
+                        status_box.update(label="Success!", state="complete")
+                        st.balloons()
+                        st.success("✅ Product Published Successfully!")
+                        st.markdown(f"[👉 **Edit in WordPress**]({res.json().get('permalink')})")
+                    else:
+                        status_box.update(label="Error!", state="error")
+                        st.error(f"Publish Failed: {res.text if hasattr(res, 'text') else res}")
 
-    with c2:
-        tab1, tab2 = st.tabs(["👁️ Visual Preview", "📋 HTML Code"])
-        with tab1:
-            if st.session_state.html_content:
-                components.html(f"""<div style="background-color: white; color: black; padding: 20px; font-family: sans-serif;">{st.session_state.html_content}</div>""", height=800, scrolling=True)
-            else: st.warning("No content.")
-        with tab2: st.text_area("Copy Code", value=st.session_state.html_content, height=800)
+# SECTION 4: PREVIEW
+if st.session_state.generated:
+    st.divider()
+    st.subheader("📝 Content Preview")
+    st.text_input("SEO Title", value=st.session_state.seo_title)
+    st.text_area("Meta Description", value=st.session_state.meta_desc)
+    components.html(f"""
+        <div style="font-family: sans-serif; background: white; color: black; padding: 20px; border-radius: 8px;">
+            {st.session_state.html_content}
+        </div>
+    """, height=600, scrolling=True)
