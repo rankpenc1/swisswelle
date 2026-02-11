@@ -10,41 +10,25 @@ from requests.auth import HTTPBasicAuth
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from bs4 import BeautifulSoup
 from PIL import Image
 import io
 
-# --- PAGE CONFIG ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(
-    page_title="SwissWelle Pro Suite",
+    page_title="SwissWelle V77",
     page_icon="🌿",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# --- CUSTOM CSS ---
+# --- CSS STYLING (Modern & Readable) ---
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #ffffff; }
-    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; }
-    .stTextInput>div>div>input { border-radius: 8px; }
-    div[data-testid="stImage"] { border-radius: 10px; overflow: hidden; border: 1px solid #333; }
-    .img-label { text-align: center; font-weight: bold; margin-top: 5px; color: #00ff00; }
-    
-    /* Content Preview Styling */
-    .content-box {
-        background: white; 
-        color: #333; 
-        padding: 30px; 
-        border-radius: 8px; 
-        font-family: 'Helvetica', sans-serif;
-        line-height: 1.6;
-    }
-    .content-box h2 { color: #2c3e50; border-bottom: 2px solid #e67e22; padding-bottom: 10px; margin-top: 20px; }
-    .content-box ul { background: #f9f9f9; padding: 20px 40px; border-radius: 5px; }
-    .content-box table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-    .content-box th, .content-box td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-    .content-box th { background-color: #f2f2f2; font-weight: bold; }
+    .source-box { border: 1px solid #444; padding: 15px; border-radius: 8px; background: #1f2937; margin-bottom: 10px; }
+    .status-ok { color: #00ff00; font-weight: bold; }
+    .status-err { color: #ff4b4b; font-weight: bold; }
+    div[data-testid="stImage"] { border: 1px solid #333; border-radius: 8px; }
+    .preview-box { background: white; color: black; padding: 30px; border-radius: 8px; font-family: 'Helvetica', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,101 +38,93 @@ def get_secret(key): return st.secrets.get(key, "")
 # --- SESSION STATE ---
 if 'final_images' not in st.session_state: st.session_state.final_images = []
 if 'p_name' not in st.session_state: st.session_state.p_name = ""
-if 'scraped_text' not in st.session_state: st.session_state.scraped_text = ""
+if 'context_data' not in st.session_state: st.session_state.context_data = "" 
 if 'html_content' not in st.session_state: st.session_state.html_content = ""
 if 'meta_desc' not in st.session_state: st.session_state.meta_desc = ""
 if 'seo_title' not in st.session_state: st.session_state.seo_title = ""
+if 'lsi_keywords' not in st.session_state: st.session_state.lsi_keywords = [] # Store LSI keywords
 if 'generated' not in st.session_state: st.session_state.generated = False
 
 # --- FUNCTIONS ---
 
-# 1. Universal Scraper (Text + Images)
+# 1. Advanced Scraper
 @st.cache_resource
 def get_driver():
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless=new") # Modern headless
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled") # Anti-detect
+    chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=chrome_options)
 
-def scrape_url_data(url):
+def scrape_url(url):
     driver = get_driver()
     candidates = set()
     text_content = ""
-    title = ""
+    status = "Success"
     
     try:
         driver.get(url)
-        time.sleep(3) # Wait for load
+        time.sleep(4) # Slightly longer wait for JS
         
-        # A. Extract Title
-        title = driver.title.split('|')[0].strip()
-        if "login" in title.lower() or "security" in title.lower() or "robot" in title.lower():
-            title = "" # Blocked likely
+        # Check Block
+        title = driver.title.lower()
+        if any(x in title for x in ["robot", "captcha", "security", "access denied"]):
+            status = "Blocked (Anti-Bot)"
         
-        # B. Extract Text Content (Visible text)
-        body = driver.find_element(By.TAG_NAME, "body")
-        text_content = body.text[:5000] # Limit to 5000 chars to save tokens
-        
-        # C. Extract Images (Generic)
-        # 1. Look for img tags
+        # A. Extract Text
+        try:
+            body = driver.find_element(By.TAG_NAME, "body")
+            text_content = body.text[:8000]
+        except: text_content = ""
+
+        # B. Extract Images (Advanced)
         images = driver.find_elements(By.TAG_NAME, "img")
         for img in images:
             src = img.get_attribute("src")
+            # Filter logic
             if src and src.startswith("http"):
-                # Filter small icons/trackers
-                if not any(x in src for x in ['icon', 'logo', 'tracking', '1x1', '32x32', '50x50']):
-                    # Clean AliExpress URLs if present
-                    src = src.split('?')[0]
+                if not any(x in src for x in ['icon', 'logo', 'loader', 'gif', '1x1', 'pixel']):
+                    # Clean URL
+                    if "aliexpress" in url: src = src.split('_')[0] # Ali specific cleaning
+                    else: src = src.split('?')[0]
+                    
+                    # Size check (skip tiny images if possible)
                     candidates.add(src)
-        
-        # 2. Look for OG Image (Meta)
-        try:
-            og_img = driver.find_element(By.CSS_SELECTOR, 'meta[property="og:image"]').get_attribute("content")
-            if og_img: candidates.add(og_img)
-        except: pass
-        
+                    
     except Exception as e:
-        print(f"Error scraping {url}: {e}")
+        status = f"Error: {str(e)}"
         
-    return title, text_content, list(candidates)
+    return status, text_content, list(candidates)
 
-# 2. Content Generator (Context Aware)
-def generate_content(provider, api_key, p_name, context_text):
-    # Prompt with Source Data
+# 2. AI Content + LSI Generator
+def generate_content_and_lsi(provider, api_key, p_name, context):
     prompt = f"""
-    Du bist ein erfahrener deutscher Senior Content Writer für 'SwissWelle.ch'. 
-    Unsere Nische: Boho-Chic, Makramee, Nachhaltige Wohnkultur.
+    Du bist ein Senior Copywriter für 'SwissWelle.ch' (Nische: Boho-Chic, Home Decor).
     
-    PRODUKT: {p_name}
-    
-    QUELLEN-INFORMATION (Nutze diese Daten für Fakten wie Material, Größe, Farbe):
+    INPUT:
+    1. PRODUKT: "{p_name}"
+    2. QUELLEN-DATEN:
     \"\"\"
-    {context_text[:8000]} 
+    {context[:12000]}
     \"\"\"
     
     AUFGABE:
-    Schreibe eine hochkonvertierende, SEO-optimierte Produktbeschreibung in HTML basierend auf den oben genannten Fakten, aber im "SwissWelle"-Stil.
+    Erstelle ein JSON Objekt mit Produktbeschreibung UND LSI Keywords für Image-SEO.
     
-    ANFORDERUNGEN:
-    1. **Tonalität**: Professionell, Emotional, Boho-Vibe, "Du"-Ansprache.
-    2. **Inhalt**:
-       - Nutze die FAKTEN aus dem Quelltext (Material, Maße etc.). Erfinde nichts Falsches, aber schmücke es schön aus.
-       - Wenn Fakten fehlen, nutze generisches Boho-Wissen (z.B. "hochwertige Verarbeitung").
-    3. **Struktur**:
-       - **SEO Titel**: Catchy & Relevant.
-       - **Intro**: Emotionaler Hook.
-       - **Spezifikationen (Tabelle)**: HTML <table> mit: Material, Stil, Maße, Farbe, Besonderheiten.
-       - **Vorteile**: Bullet Points (<ul>).
-       - **CTA**: Kaufaufruf.
-    4. **Format**: Nur HTML Code (<h2>, <p>, <ul>, <table>). KEINE <html>/<body> Tags.
+    REGELN:
+    1. **Inhalt**: Nutze NUR Fakten aus den Quellen (Material, Maße). 
+       - Tonalität: Emotional, Boho, Deutsch (Sie/Du Mix passend zur Brand).
+    2. **Image SEO (LSI)**: Erstelle eine Liste von 10-15 relevanten deutschen Suchbegriffen (LSI Keywords) basierend auf dem Produkt (z.B. "wandbehang-makramee-gross", "boho-wanddeko-beige"). Diese nutzen wir für Dateinamen.
     
-    OUTPUT FORMAT (JSON):
+    OUTPUT JSON FORMAT:
     {{
         "seo_title": "...",
         "meta_description": "...",
-        "html_content": "..."
+        "html_content": "HTML Code (<h2>, <ul>, <table>)...",
+        "lsi_keywords": ["keyword-1", "keyword-2", "keyword-3", ...]
     }}
     """
     
@@ -168,40 +144,55 @@ def generate_content(provider, api_key, p_name, context_text):
             response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
             return json.loads(response.text)
             
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
-# 3. Uploader
-def upload_to_wp(item, p_name, wp_url, user, password):
+# 3. Optimized Upload with LSI Filenames
+def upload_image_optimized(item, filename_keyword, wp_url, user, password):
     try:
         api_url = f"{wp_url}/wp-json/wp/v2/media"
-        clean_name = re.sub(r'[^a-zA-Z0-9]', '-', p_name).lower()
-        clean_name = clean_name.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
-        filename = f"{clean_name}-{int(time.time())}.jpg"
+        
+        # 1. Prepare Filename (Clean LSI Keyword)
+        clean_name = re.sub(r'[^a-zA-Z0-9-]', '', filename_keyword.lower().replace(" ", "-"))
+        final_filename = f"{clean_name}.jpg"
+        
+        # 2. Optimize Image (Pillow)
+        img_byte_arr = io.BytesIO()
         
         if item['type'] == 'file':
-            img_byte_arr = io.BytesIO()
             image = Image.open(item['data'])
-            image = image.convert('RGB')
-            image.save(img_byte_arr, format='JPEG', quality=85)
-            img_data = img_byte_arr.getvalue()
         else:
             r = requests.get(item['data'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
             if r.status_code != 200: return None
-            img_data = r.content
+            image = Image.open(io.BytesIO(r.content))
+            
+        # Convert to RGB & Compress
+        image = image.convert('RGB')
+        image.save(img_byte_arr, format='JPEG', quality=85, optimize=True)
+        img_data = img_byte_arr.getvalue()
 
-        headers = {'Content-Disposition': f'attachment; filename={filename}','Content-Type': 'image/jpeg'}
+        # 3. Upload to WP
+        headers = {
+            'Content-Disposition': f'attachment; filename={final_filename}',
+            'Content-Type': 'image/jpeg'
+        }
         res = requests.post(api_url, data=img_data, headers=headers, auth=HTTPBasicAuth(user, password))
         
         if res.status_code == 201:
             pid = res.json()['id']
-            # SEO Alt Text
-            requests.post(f"{api_url}/{pid}", json={"alt_text": p_name, "title": p_name, "caption": p_name}, auth=HTTPBasicAuth(user, password))
+            # 4. Set ALT Text & Title to LSI Keyword
+            seo_update = {
+                "alt_text": filename_keyword.replace("-", " "),
+                "title": filename_keyword.replace("-", " "),
+                "caption": filename_keyword.replace("-", " ")
+            }
+            requests.post(f"{api_url}/{pid}", json=seo_update, auth=HTTPBasicAuth(user, password))
             return pid
-    except: return None
+    except Exception as e: 
+        print(f"Upload Error: {e}")
+        return None
     return None
 
-def publish_product(p_data, image_ids, feat_id, wp_url, ck, cs):
+def publish_final_product(p_data, image_ids, feat_id, wp_url, ck, cs):
     final_images = [{"id": feat_id}] + [{"id": i} for i in image_ids if i != feat_id]
     payload = {
         "name": p_data['seo_title'],
@@ -216,15 +207,14 @@ def publish_product(p_data, image_ids, feat_id, wp_url, ck, cs):
             {"key": "rank_math_focus_keyword", "value": p_data['seo_title']}
         ]
     }
-    try:
-        return requests.post(f"{wp_url}/wp-json/wc/v3/products", auth=HTTPBasicAuth(ck, cs), json=payload)
+    try: return requests.post(f"{wp_url}/wp-json/wc/v3/products", auth=HTTPBasicAuth(ck, cs), json=payload)
     except Exception as e: return str(e)
 
 
-# --- UI LAYOUT ---
+# --- UI SIDEBAR ---
 with st.sidebar:
-    st.title("🌿 SwissWelle Admin")
-    if st.button("🔄 Reset / New Post", type="primary"):
+    st.title("🌿 SwissWelle V77")
+    if st.button("🔄 New Post", type="primary"):
         st.session_state.clear()
         st.rerun()
     
@@ -235,153 +225,170 @@ with st.sidebar:
         else:
             api_key = st.text_input("Gemini Key", value=get_secret("gemini_api_key"), type="password")
 
-# --- MAIN ---
+# --- MAIN UI ---
 
-# SECTION 1: SOURCES
-st.subheader("1. Product Sources (Content & Images)")
+# 1. IDENTITY
+st.subheader("1. Product Identity")
+p_name_input = st.text_input("Product Name (Primary Keyword)", value=st.session_state.p_name)
+st.session_state.p_name = p_name_input
 
-# A. URLs
-with st.expander("🔗 Resource URLs (Amazon, AliExpress, etc.)", expanded=True):
-    urls_input = st.text_area("Paste URLs (One per line) - We will fetch Text & Images", height=100)
-    if st.button("🔍 Analyze URLs"):
-        if urls_input:
-            urls = [u.strip() for u in urls_input.split('\n') if u.strip()]
-            
-            progress_text = "Analyzing sources..."
-            my_bar = st.progress(0, text=progress_text)
-            
-            total_text = ""
-            total_imgs = 0
-            
-            for i, url in enumerate(urls):
-                t_title, t_content, t_imgs = scrape_url_data(url)
+# 2. DATA SOURCES
+st.subheader("2. Data Sources (Context)")
+c1, c2 = st.columns([1, 1])
+
+with c1:
+    with st.expander("🔗 Scrape URLs (Amazon/Ali/Walmart)", expanded=True):
+        urls_input = st.text_area("Paste URLs (One per line)", height=100)
+        if st.button("🔍 Fetch Data"):
+            if urls_input:
+                urls = [u.strip() for u in urls_input.split('\n') if u.strip()]
+                prog = st.progress(0)
                 
-                # Append Text to Knowledge Base
-                total_text += f"\n\n--- SOURCE: {url} ---\nTITLE: {t_title}\nCONTENT: {t_content}\n"
+                for i, url in enumerate(urls):
+                    status, txt, imgs = scrape_url(url)
+                    
+                    # Append Text
+                    header = f"\n=== SOURCE: {url} | STATUS: {status} ===\n"
+                    st.session_state.context_data += header + txt
+                    
+                    # Append Images
+                    for img in imgs:
+                        st.session_state.final_images.append({'type': 'url', 'data': img})
+                    
+                    prog.progress((i + 1) / len(urls))
                 
-                # Set Name if empty
-                if not st.session_state.p_name and t_title:
-                    st.session_state.p_name = t_title
-                
-                # Add Images
-                for img in t_imgs:
-                    st.session_state.final_images.append({'type': 'url', 'data': img})
-                    total_imgs += 1
-                
-                my_bar.progress((i + 1) / len(urls), text=f"Scraped {url}...")
-            
-            # Save scraped text
-            st.session_state.scraped_text += total_text
-            st.success(f"Done! Found {total_imgs} images and extracted product details.")
-            st.rerun()
+                st.success(f"Done. Images Found: {len(st.session_state.final_images)}")
+                st.rerun()
 
-# B. Manual Content
-with st.expander("📝 Manual Content / Notes (Optional)"):
-    manual_text = st.text_area("Paste raw product description here if scraping fails, or add specific instructions.", height=150)
+with c2:
+    with st.expander("📝 Manual Data (Fallback)", expanded=True):
+        st.caption("If scraper fails (e.g. Amazon Block), paste description here:")
+        manual_txt = st.text_area("Product Details", height=135, placeholder="Paste product specs, size, material here...")
+        if manual_txt:
+            st.session_state.context_data += "\n=== MANUAL DATA ===\n" + manual_txt
 
-# C. Manual Images
-with st.expander("📂 Upload Images"):
-    upl_files = st.file_uploader("Bulk Upload", accept_multiple_files=True)
-    if upl_files:
-        existing = [x['data'].name for x in st.session_state.final_images if x['type'] == 'file']
-        for f in upl_files:
-            if f.name not in existing:
-                st.session_state.final_images.append({'type': 'file', 'data': f})
-        st.success(f"Added {len(upl_files)} files")
+# 3. IMAGE MANAGER
+st.subheader(f"3. Image Manager ({len(st.session_state.final_images)})")
+upl_files = st.file_uploader("Upload Manual Images", accept_multiple_files=True)
+if upl_files:
+    for f in upl_files:
+        st.session_state.final_images.append({'type': 'file', 'data': f})
+    st.rerun()
 
-# SECTION 2: REVIEW
-st.divider()
-col_a, col_b = st.columns([2, 1])
-
-with col_a:
-    st.subheader("2. Image Manager")
-    p_name_input = st.text_input("Product Name (German)", value=st.session_state.p_name)
-    st.session_state.p_name = p_name_input
-    
-    if st.session_state.final_images:
-        cols = st.columns(4)
-        for i, item in enumerate(st.session_state.final_images):
-            with cols[i % 4]:
+if st.session_state.final_images:
+    cols = st.columns(6)
+    for i, item in enumerate(st.session_state.final_images):
+        with cols[i % 6]:
+            with st.container():
                 if item['type'] == 'file': st.image(item['data'], use_container_width=True)
                 else: st.image(item['data'], use_container_width=True)
                 st.caption(f"Image #{i+1}")
-                if st.button(f"🗑️", key=f"del_{i}"):
+                if st.button("❌", key=f"del_{i}"):
                     st.session_state.final_images.pop(i)
                     st.rerun()
 
-with col_b:
-    st.subheader("3. Actions")
-    
-    # GENERATE
-    if st.button("🪄 Write Content", type="primary"):
-        if not api_key or not st.session_state.p_name:
-            st.error("Missing Info")
+# 4. GENERATE & PREVIEW
+st.divider()
+
+if st.button("🪄 Generate Content & LSI Keywords", type="primary"):
+    if not api_key or not st.session_state.p_name:
+        st.error("Missing Name or API Key")
+    else:
+        # Combine all data
+        full_context = st.session_state.context_data
+        if len(full_context) < 10:
+            st.warning("No data found! Please scrape a URL or paste text manually.")
         else:
-            # Combine Scraped + Manual Text
-            full_context = st.session_state.scraped_text + "\n\nMANUAL NOTES:\n" + manual_text
-            
-            with st.status("Reading Sources & Writing..."):
-                res = generate_content(provider, api_key, st.session_state.p_name, full_context)
+            with st.status("AI Working (Content + LSI Research)..."):
+                res = generate_content_and_lsi(provider, api_key, st.session_state.p_name, full_context)
                 if "error" in res: st.error(res['error'])
                 else:
                     st.session_state.html_content = res.get('html_content', '')
                     st.session_state.meta_desc = res.get('meta_description', '')
                     st.session_state.seo_title = res.get('seo_title', st.session_state.p_name)
+                    st.session_state.lsi_keywords = res.get('lsi_keywords', [])
                     st.session_state.generated = True
                     st.rerun()
-    
-    # PUBLISH
-    if st.session_state.generated:
-        st.divider()
-        st.write("Ready to Publish!")
-        feat_num = st.number_input("Featured Image #:", min_value=1, max_value=len(st.session_state.final_images), value=1)
-        
-        if st.button("📤 Upload & Publish"):
-            feat_idx = feat_num - 1
-            status = st.status("Publishing...")
-            
-            # Upload Featured
-            status.write("Uploading Featured...")
-            feat_id = upload_to_wp(st.session_state.final_images[feat_idx], st.session_state.seo_title, get_secret("wp_url"), get_secret("wp_user"), get_secret("wp_app_pass"))
-            
-            if feat_id:
-                gallery_ids = []
-                for idx, img in enumerate(st.session_state.final_images):
-                    if idx != feat_idx:
-                        status.write(f"Uploading Gallery {idx+1}...")
-                        pid = upload_to_wp(img, st.session_state.seo_title, get_secret("wp_url"), get_secret("wp_user"), get_secret("wp_app_pass"))
-                        if pid: gallery_ids.append(pid)
-                
-                status.write("Creating Product...")
-                p_data = {
-                    "seo_title": st.session_state.seo_title,
-                    "html_content": st.session_state.html_content,
-                    "meta_description": st.session_state.meta_desc
-                }
-                res = publish_product(p_data, gallery_ids, feat_id, get_secret("wp_url"), get_secret("wc_ck"), get_secret("wc_cs"))
-                
-                if hasattr(res, 'status_code') and res.status_code == 201:
-                    status.update(label="Published!", state="complete")
-                    st.balloons()
-                    st.success("✅ Success!")
-                    st.markdown(f"[👉 **View Product**]({res.json().get('permalink')})")
-                else:
-                    status.update(label="Error", state="error")
-                    st.error(f"Error: {res.text if hasattr(res, 'text') else res}")
-            else:
-                status.update(label="Failed", state="error")
-                st.error("Featured Image Failed")
 
-# 4. PREVIEW
+# PREVIEW SECTION
 if st.session_state.generated:
     st.divider()
-    st.subheader("👁️ Content Preview")
-    preview_html = f"""
-    <div style="background-color: white; color: black; padding: 30px; border-radius: 10px; font-family: sans-serif; line-height: 1.6;">
-        <h1 style="color: #2c3e50;">{st.session_state.seo_title}</h1>
-        <p style="color: #666; font-style: italic;">{st.session_state.meta_desc}</p>
-        <hr style="border: 1px solid #eee;">
-        {st.session_state.html_content}
-    </div>
-    """
-    components.html(preview_html, height=800, scrolling=True)
+    c_prev, c_pub = st.columns([2, 1])
+    
+    with c_prev:
+        st.subheader("👁️ Preview")
+        
+        # Show LSI Keywords
+        with st.expander("📊 Generated LSI Keywords (For Images)"):
+            st.write(st.session_state.lsi_keywords)
+        
+        # Visual Preview
+        preview_html = f"""
+        <div class="preview-box">
+            <h1>{st.session_state.seo_title}</h1>
+            <p><em>{st.session_state.meta_desc}</em></p>
+            <hr>
+            {st.session_state.html_content}
+        </div>
+        """
+        components.html(preview_html, height=600, scrolling=True)
+        
+    with c_pub:
+        st.subheader("🚀 Publish")
+        total = len(st.session_state.final_images)
+        feat_num = st.number_input("Featured Image #:", min_value=1, max_value=total if total else 1, value=1)
+        
+        if st.button("📤 Upload & Publish"):
+            if total == 0:
+                st.error("No images!")
+            else:
+                feat_idx = feat_num - 1
+                status = st.status("Starting Publish Process...")
+                
+                # Get Keywords
+                lsi_list = st.session_state.lsi_keywords
+                if not lsi_list: lsi_list = [st.session_state.seo_title]
+                
+                uploaded_ids = []
+                
+                # Upload Loop with LSI Renaming
+                for idx, img in enumerate(st.session_state.final_images):
+                    # Pick a keyword (Loop if images > keywords)
+                    keyword = lsi_list[idx % len(lsi_list)]
+                    # Add number to avoid duplicate filenames if looping
+                    if idx >= len(lsi_list): keyword += f"-{idx}"
+                    
+                    status.write(f"Optimizing & Uploading Image #{idx+1} as '{keyword}.jpg'...")
+                    
+                    pid = upload_image_optimized(img, keyword, get_secret("wp_url"), get_secret("wp_user"), get_secret("wp_app_pass"))
+                    if pid: uploaded_ids.append(pid)
+                
+                if not uploaded_ids:
+                    status.update(label="Upload Failed", state="error")
+                    st.error("No images could be uploaded.")
+                else:
+                    # Identify Featured ID
+                    # Note: We uploaded in order, so feat_idx corresponds to uploaded_ids index
+                    if feat_idx < len(uploaded_ids):
+                        final_feat_id = uploaded_ids[feat_idx]
+                    else:
+                        final_feat_id = uploaded_ids[0] # Fallback
+                    
+                    status.write("Creating Product Draft...")
+                    
+                    p_data = {
+                        "seo_title": st.session_state.seo_title,
+                        "html_content": st.session_state.html_content,
+                        "meta_description": st.session_state.meta_desc
+                    }
+                    
+                    res = publish_final_product(p_data, uploaded_ids, final_feat_id, get_secret("wp_url"), get_secret("wc_ck"), get_secret("wc_cs"))
+                    
+                    if hasattr(res, 'status_code') and res.status_code == 201:
+                        status.update(label="Published!", state="complete")
+                        st.balloons()
+                        st.success("✅ Product Live!")
+                        st.markdown(f"[👉 **Click to Edit**]({res.json().get('permalink')})")
+                    else:
+                        status.update(label="Publish Error", state="error")
+                        st.error(f"Error: {res.text if hasattr(res, 'text') else res}")
